@@ -1,0 +1,186 @@
+import { useEffect, useRef, useState } from "react";
+import {
+  FlatList,
+  Pressable,
+  StyleSheet,
+  TextInput,
+  View,
+} from "react-native";
+
+import { useThemeColor } from "@/hooks/use-theme-color";
+import { addBrand, getBrands } from "@/lib/brands";
+import { ThemedText } from "./themed-text";
+
+type Props = {
+  value: string;
+  onChange: (value: string) => void;
+  editable?: boolean;
+  placeholder?: string;
+};
+
+const MAX_SUGGESTIONS = 6;
+
+export function BrandInput({ value, onChange, editable = true, placeholder = "e.g. Uniqlo" }: Props) {
+  const [allBrands, setAllBrands] = useState<string[]>([]);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef<TextInput>(null);
+
+  const textColor = useThemeColor({}, "text");
+  const placeholderColor = useThemeColor({ light: "#8E8E93" }, "icon");
+  const borderColor = useThemeColor({ light: "#C6C6C8" }, "icon");
+  const inputBackground = useThemeColor({ light: "#EFEFF4" }, "background");
+  const dropdownBackground = useThemeColor({ light: "#fff" }, "background");
+  const separatorColor = useThemeColor({ light: "#E5E5EA" }, "icon");
+
+  useEffect(() => {
+    getBrands().then(setAllBrands);
+  }, []);
+
+  function computeSuggestions(text: string) {
+    const q = text.trim().toLowerCase();
+    if (!q) return [];
+    const matches = allBrands
+      .filter((b) => b.toLowerCase().includes(q))
+      .slice(0, MAX_SUGGESTIONS);
+    const exactMatch = allBrands.some((b) => b.toLowerCase() === q);
+    if (!exactMatch && text.trim()) {
+      // Put "Add <brand>" option at the end
+      return [...matches, `__add__:${text.trim()}`];
+    }
+    return matches;
+  }
+
+  function handleChangeText(text: string) {
+    onChange(text);
+    const next = computeSuggestions(text);
+    setSuggestions(next);
+    setOpen(next.length > 0);
+  }
+
+  async function handleSelect(item: string) {
+    if (item.startsWith("__add__:")) {
+      const newBrand = item.slice("__add__:".length);
+      await addBrand(newBrand);
+      const updated = await getBrands();
+      setAllBrands(updated);
+      onChange(newBrand);
+    } else {
+      onChange(item);
+    }
+    setSuggestions([]);
+    setOpen(false);
+    inputRef.current?.blur();
+  }
+
+  function handleFocus() {
+    const next = computeSuggestions(value);
+    setSuggestions(next);
+    setOpen(next.length > 0);
+  }
+
+  function handleBlur() {
+    // Small delay so taps on dropdown items register before closing
+    setTimeout(() => setOpen(false), 150);
+  }
+
+  return (
+    <View style={styles.wrapper}>
+      <TextInput
+        ref={inputRef}
+        style={[styles.input, { color: textColor, borderColor, backgroundColor: inputBackground }]}
+        placeholder={placeholder}
+        placeholderTextColor={placeholderColor}
+        value={value}
+        onChangeText={handleChangeText}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        editable={editable}
+        autoCapitalize="words"
+        autoCorrect={false}
+      />
+
+      {open && suggestions.length > 0 && (
+        <View style={[styles.dropdown, { borderColor, backgroundColor: dropdownBackground }]}>
+          <FlatList
+            data={suggestions}
+            keyExtractor={(item) => item}
+            keyboardShouldPersistTaps="always"
+            scrollEnabled={suggestions.length > MAX_SUGGESTIONS}
+            renderItem={({ item, index }) => {
+              const isAdd = item.startsWith("__add__:");
+              const label = isAdd ? `Add "${item.slice("__add__:".length)}"` : item;
+              return (
+                <>
+                  {index > 0 && (
+                    <View style={[styles.separator, { backgroundColor: separatorColor }]} />
+                  )}
+                  <Pressable
+                    onPress={() => handleSelect(item)}
+                    style={({ pressed }) => [
+                      styles.suggestion,
+                      pressed && styles.suggestionPressed,
+                    ]}
+                  >
+                    <ThemedText
+                      style={[styles.suggestionText, isAdd && styles.addText]}
+                      numberOfLines={1}
+                    >
+                      {label}
+                    </ThemedText>
+                  </Pressable>
+                </>
+              );
+            }}
+          />
+        </View>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  wrapper: {
+    zIndex: 10,
+  },
+  input: {
+    height: 44,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    fontSize: 16,
+  },
+  dropdown: {
+    position: "absolute",
+    top: 46,
+    left: 0,
+    right: 0,
+    borderWidth: 1,
+    borderRadius: 10,
+    overflow: "hidden",
+    zIndex: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  suggestion: {
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+  suggestionPressed: {
+    opacity: 0.55,
+  },
+  suggestionText: {
+    fontSize: 15,
+  },
+  addText: {
+    color: "#0a7ea4",
+    fontWeight: "600",
+  },
+  separator: {
+    height: StyleSheet.hairlineWidth,
+    marginHorizontal: 10,
+  },
+});
