@@ -1,5 +1,8 @@
+import { getSupabase } from "@/supabase-client";
+import * as AuthSession from "expo-auth-session";
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import * as WebBrowser from "expo-web-browser";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -8,11 +11,10 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  View,
+  View
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-
-import { getSupabase } from "@/supabase-client";
+WebBrowser.maybeCompleteAuthSession();
 
 type Mode = "login" | "signup";
 
@@ -26,6 +28,73 @@ export default function AuthScreen() {
   const [error, setError] = useState<string | null>(null);
   const [signedUp, setSignedUp] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+
+  async function handleGoogleSignIn() {
+    setError(null);
+    setLoading(true);
+    try {
+      const redirectUri = AuthSession.makeRedirectUri();
+      const supabase = getSupabase();
+
+      const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: redirectUri, skipBrowserRedirect: true },
+      });
+
+      if (oauthError || !data.url) {
+        setError(oauthError?.message ?? "OAuth failed");
+        return;
+      }
+
+      console.log("redirectUri (app):", redirectUri);
+      console.log("OAuth URL:", data.url);
+
+      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUri);
+
+      if (result.type === "success") {
+        const parsed = new URL(result.url);
+
+        const code = parsed.searchParams.get("code");
+        if (code) {
+          const { error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
+          if (sessionError) setError(sessionError.message);
+          return;
+        }
+
+        const hash = new URLSearchParams(parsed.hash.substring(1));
+        const accessToken = hash.get("access_token");
+        const refreshToken = hash.get("refresh_token");
+        if (accessToken && refreshToken) {
+          const { error: sessionError } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+          if (sessionError) setError(sessionError.message);
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    const supabase = getSupabase();
+  
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        if (event === "SIGNED_IN" && session) {
+          console.log("User signed in → redirecting");
+          router.replace("/connect-gmail");
+        }
+      }
+    );
+  
+    return () => {
+      listener.subscription.unsubscribe();
+    };
+  }, []);
 
   function switchMode(next: Mode) {
     setMode(next);
@@ -57,7 +126,6 @@ export default function AuthScreen() {
           password,
         });
         if (authError) throw authError;
-        router.replace("/(tabs)");
       } else {
         const { error: authError } = await supabase.auth.signUp({
           email: trimmedEmail,
@@ -163,7 +231,21 @@ export default function AuthScreen() {
           </View>
         )}
 
-        <View style={styles.toggle}>
+        <View style={styles.dividerRow}>
+          <View style={styles.dividerLine} />
+          <Text style={styles.dividerText}>or</Text>
+          <View style={styles.dividerLine} />
+        </View>
+
+        <Pressable
+          style={[styles.googleButton, loading && styles.buttonDisabled]}
+          onPress={handleGoogleSignIn}
+          disabled={loading}
+        >
+          <Text style={styles.googleButtonText}>Continue with Google</Text>
+        </Pressable>
+
+        <View style={[styles.toggle, { marginTop: 24 }]}>
           <Text style={styles.toggleText}>
             {isLogin ? "Don't have an account? " : "Already have an account? "}
           </Text>
@@ -179,6 +261,35 @@ export default function AuthScreen() {
 }
 
 const styles = StyleSheet.create({
+  dividerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: "#E0E0E0",
+  },
+  dividerText: {
+    marginHorizontal: 12,
+    fontSize: 13,
+    color: "#999",
+  },
+  googleButton: {
+    height: 52,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  googleButtonText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#111",
+  },
   root: {
     flex: 1,
     backgroundColor: "#fff",

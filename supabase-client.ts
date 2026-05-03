@@ -20,7 +20,6 @@ export function getSupabase(): SupabaseClient {
   if (!url || !key) {
     throw new Error("Missing Supabase config in app.config.ts extra");
   }
-
   client = createClient(url, key);
   return client;
 }
