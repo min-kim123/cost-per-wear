@@ -1,7 +1,8 @@
+import { getSupabase } from "@/supabase-client";
+import * as AuthSession from "expo-auth-session";
 import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
-import * as Google from "expo-auth-session/providers/google";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -11,63 +12,67 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-WebBrowser.maybeCompleteAuthSession();
-
 export default function ConnectGmailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    webClientId: process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID!,
-
-    scopes: [
-      "https://www.googleapis.com/auth/gmail.readonly",
-    ],
-
-    extraParams: {
-      access_type: "offline",
-      prompt: "consent",
-    },
-  });
-
-  useEffect(() => {
-    if (response?.type === "success") {
-      const auth = response.authentication;
-
-      console.log("Gmail Access Token:", auth?.accessToken);
-      console.log("Full Auth Object:", auth);
-
-      // ⚠️ IMPORTANT (next step for you)
-      // You should store:
-      // - accessToken
-      // - refreshToken (if present)
-
-      router.replace("/(tabs)");
-    }
-
-    if (response?.type === "error") {
-      setError("Failed to connect Gmail. Please try again.");
-      setLoading(false);
-    }
-  }, [response]);
-
-  const handleConnect = async () => {
+  async function handleConnect() {
     setError(null);
     setLoading(true);
-
     try {
-      await promptAsync();
+      const redirectUri = AuthSession.makeRedirectUri();
+      const supabase = getSupabase();
+
+      const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: redirectUri,
+          skipBrowserRedirect: true,
+          scopes: "openid email profile https://www.googleapis.com/auth/gmail.readonly",
+          queryParams: { access_type: "offline", prompt: "consent" },
+        },
+      });
+
+      if (oauthError || !data.url) {
+        setError(oauthError?.message ?? "OAuth failed");
+        return;
+      }
+
+      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUri);
+
+      if (result.type === "success") {
+        const parsed = new URL(result.url);
+        const code = parsed.searchParams.get("code");
+        if (code) {
+          const { data: sessionData, error: sessionError } =
+            await supabase.auth.exchangeCodeForSession(code);
+          if (sessionError) {
+            setError(sessionError.message);
+            return;
+          }
+          const refreshToken = sessionData.session?.provider_refresh_token;
+          const accessToken = sessionData.session?.provider_token;
+          if (refreshToken) {
+            const { error: fnError } = await supabase.functions.invoke(
+              "store-gmail-token",
+              { body: { refresh_token: refreshToken, access_token: accessToken } },
+            );
+            if (fnError) {
+              setError("Gmail connected but token storage failed. Please try again.");
+              return;
+            }
+          }
+          router.replace("/(tabs)");
+        }
+      }
     } catch (err) {
-      setError("Something went wrong.");
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
       setLoading(false);
     }
-  };
-
-  const handleSkip = () => {
-    router.replace("/(tabs)");
-  };
+  }
 
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom + 24 }]}>
@@ -75,15 +80,29 @@ export default function ConnectGmailScreen() {
         <Text style={styles.title}>Connect your Gmail</Text>
 
         <Text style={styles.subtitle}>
-          Import your purchases and track cost per wear automatically.
+          To automatically track your clothing purchases, we need read-only
+          access to your Gmail.
         </Text>
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        <View style={styles.bullets}>
+          <Text style={styles.bullet}>
+            {"• "}We only scan for shopping receipts — nothing else is read.
+          </Text>
+          <Text style={styles.bullet}>
+            {"• "}Access is read-only. We can never send, delete, or modify
+            emails.
+          </Text>
+          <Text style={styles.bullet}>
+            {"• "}New purchases are imported automatically in the background.
+          </Text>
+        </View>
+
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
         <Pressable
           style={[styles.button, loading && styles.buttonDisabled]}
           onPress={handleConnect}
-          disabled={!request || loading}
+          disabled={loading}
         >
           {loading ? (
             <ActivityIndicator color="#fff" />
@@ -92,7 +111,7 @@ export default function ConnectGmailScreen() {
           )}
         </Pressable>
 
-        <Pressable onPress={handleSkip}>
+        <Pressable onPress={() => router.replace("/(tabs)")}>
           <Text style={styles.skip}>Skip for now</Text>
         </Pressable>
       </View>
@@ -118,8 +137,17 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 15,
     color: "#666",
-    marginBottom: 32,
+    marginBottom: 20,
     lineHeight: 22,
+  },
+  bullets: {
+    gap: 10,
+    marginBottom: 32,
+  },
+  bullet: {
+    fontSize: 14,
+    color: "#444",
+    lineHeight: 20,
   },
   button: {
     height: 52,
@@ -142,8 +170,9 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#666",
   },
-  error: {
+  errorText: {
     color: "#D00",
     marginBottom: 12,
+    fontSize: 13,
   },
 });

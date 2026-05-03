@@ -1,7 +1,7 @@
 import { DefaultTheme, ThemeProvider } from "@react-navigation/native";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -14,13 +14,15 @@ export const unstable_settings = {
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const segments = useSegments();
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
     const supabase = getSupabase();
 
     supabase.auth.getSession().then(({ data: { session } }) => {
-      const inAuthScreen = segments[0] === "auth";
+      const inAuthScreen = segmentsRef.current[0] === "auth";
       if (!session && !inAuthScreen) {
         router.replace("/auth");
       } else if (session && inAuthScreen) {
@@ -31,7 +33,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
     const { data: listener } = supabase.auth.onAuthStateChange(
       (_event, session) => {
-        const inAuthScreen = segments[0] === "auth";
+        const inAuthScreen = segmentsRef.current[0] === "auth";
         if (!session && !inAuthScreen) {
           router.replace("/auth");
         } else if (session && inAuthScreen) {
@@ -41,7 +43,6 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     );
 
     return () => listener.subscription.unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (!checked) return null;

@@ -46,9 +46,6 @@ export default function AuthScreen() {
         return;
       }
 
-      console.log("redirectUri (app):", redirectUri);
-      console.log("OAuth URL:", data.url);
-
       const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUri);
 
       if (result.type === "success") {
