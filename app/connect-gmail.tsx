@@ -30,7 +30,8 @@ export default function ConnectGmailScreen() {
         options: {
           redirectTo: redirectUri,
           skipBrowserRedirect: true,
-          scopes: "openid email profile https://www.googleapis.com/auth/gmail.readonly",
+          scopes:
+            "openid email profile https://www.googleapis.com/auth/gmail.readonly",
           queryParams: { access_type: "offline", prompt: "consent" },
         },
       });
@@ -40,7 +41,10 @@ export default function ConnectGmailScreen() {
         return;
       }
 
-      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUri);
+      const result = await WebBrowser.openAuthSessionAsync(
+        data.url,
+        redirectUri,
+      );
 
       if (result.type === "success") {
         const parsed = new URL(result.url);
@@ -54,17 +58,54 @@ export default function ConnectGmailScreen() {
           }
           const refreshToken = sessionData.session?.provider_refresh_token;
           const accessToken = sessionData.session?.provider_token;
+          console.log("REFRESH TOKEN", refreshToken);
+          console.log("ACCESS TOKEN", accessToken);
+
           if (refreshToken) {
+            console.log("STORING GMAIL TOKEN");
             const { error: fnError } = await supabase.functions.invoke(
               "store-gmail-token",
-              { body: { refresh_token: refreshToken, access_token: accessToken } },
+              {
+                body: {
+                  refresh_token: refreshToken,
+                  access_token: accessToken,
+                },
+              },
             );
             if (fnError) {
-              setError("Gmail connected but token storage failed. Please try again.");
+              console.error("Gmail token storage failed:", fnError);
+              setError(
+                "Gmail connected but token storage failed. Please try again.",
+              );
               return;
             }
+            // --- CRITICAL FIX START ---
+            // Extract the user session details to authenticate the background scan call
+            const {
+              data: { session },
+            } = await supabase.auth.getSession();
+
+            if (session?.access_token) {
+              console.log("INVOKING GMAIL SCAN PIPELINE...");
+              try {
+                const { data, error } = await supabase.functions.invoke("initial-gmail-scan", {
+                  headers: {
+                    Authorization: `Bearer ${session.access_token}`,
+                  },
+                });
+                
+                if (error) {
+                  console.error("Edge function returned an error status:", error);
+                } else {
+                  console.log("Edge function responded successfully:", data);
+                }
+              } catch (e) {
+                console.error("Network request failed to reach server:", e);
+              }
+            }
+            console.log("INITIAL GMAIL SCAN FIRED");
           }
-          router.replace("/(tabs)");
+          // router.replace("/(tabs)");
         }
       }
     } catch (err) {

@@ -90,6 +90,18 @@ export default function ClosetScreen() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [incrementing, setIncrementing] = useState(false);
+  const [hasGmailAccess, setHasGmailAccess] = useState<boolean | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  const checkGmailAccess = useCallback(async () => {
+    const supabase = getSupabase();
+    const { data } = await supabase
+      .from("user_tokens")
+      .select("user_id")
+      .eq("provider", "google")
+      .maybeSingle();
+    setHasGmailAccess(data !== null);
+  }, []);
 
   const loadItems = useCallback((opts: { silent?: boolean } = {}) => {
     if (!opts.silent) setLoading(true);
@@ -127,7 +139,8 @@ export default function ClosetScreen() {
   useFocusEffect(
     useCallback(() => {
       loadItems();
-    }, [loadItems]),
+      checkGmailAccess();
+    }, [loadItems, checkGmailAccess]),
   );
 
   const handleRefresh = useCallback(() => {
@@ -144,6 +157,19 @@ export default function ClosetScreen() {
   function cancelSelectMode() {
     setSelectMode(false);
     setSelectedIds(new Set());
+  }
+
+  async function syncGmail() {
+    setFabOpen(false);
+    setSyncing(true);
+    try {
+      await getSupabase().functions.invoke("sync-gmail", {
+        body: { force: true },
+      });
+      loadItems({ silent: true });
+    } finally {
+      setSyncing(false);
+    }
   }
 
   function toggleSelect(id: string) {
@@ -251,9 +277,26 @@ export default function ClosetScreen() {
                   No items match your search.
                 </ThemedText>
               ) : (
-                <ThemedText style={styles.emptySearch}>
-                  No items in your closet yet.
-                </ThemedText>
+                <View style={styles.emptyState}>
+                  <ThemedText style={styles.emptySearch}>
+                    No items in your closet yet.
+                  </ThemedText>
+                  {hasGmailAccess === false && (
+                    <Pressable
+                      onPress={() => router.push("/connect-gmail")}
+                      style={({ pressed }) => [
+                        styles.gmailPrompt,
+                        pressed && styles.fabPressed,
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel="Connect Gmail to import purchases"
+                    >
+                      <ThemedText style={styles.gmailPromptText}>
+                        Connect Gmail to auto-import purchases
+                      </ThemedText>
+                    </Pressable>
+                  )}
+                </View>
               )
             }
             renderItem={({ item }) => {
@@ -319,6 +362,8 @@ export default function ClosetScreen() {
               disabled={incrementing || selectedIds.size === 0}
               style={({ pressed }) => [
                 styles.fab,
+                styles.fabRect,
+                styles.fabRectOutline,
                 { bottom: insets.bottom + 16, right: 16 },
                 pressed && styles.fabPressed,
                 (incrementing || selectedIds.size === 0) && styles.fabDisabled,
@@ -327,35 +372,63 @@ export default function ClosetScreen() {
               accessibilityLabel="Confirm wear count"
             >
               {incrementing ? (
-                <ActivityIndicator color="#fff" />
+                <ActivityIndicator color="#0a7ea4" />
               ) : (
-                <ThemedText style={styles.fabCountLabel} lightColor="#fff" darkColor="#fff">
-                  +{selectedIds.size}
+                <ThemedText style={styles.fabRectLabel}>
+                  +1 wear count
                 </ThemedText>
               )}
             </Pressable>
           </>
         ) : fabOpen ? (
           <>
+            {hasGmailAccess && (
+              <Pressable
+                onPress={syncGmail}
+                disabled={syncing}
+                style={({ pressed }) => [
+                  styles.fab,
+                  styles.fabRect,
+                  styles.fabRectOutline,
+                  { bottom: insets.bottom + 160, right: 16 },
+                  pressed && styles.fabPressed,
+                  syncing && styles.fabDisabled,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Sync Gmail"
+              >
+                {syncing ? (
+                  <ActivityIndicator color="#0a7ea4" />
+                ) : (
+                  <ThemedText style={styles.fabRectLabel}>sync gmail</ThemedText>
+                )}
+              </Pressable>
+            )}
             <Pressable
               onPress={() => { setFabOpen(false); router.push("/add-closet-item"); }}
-              style={[styles.fab, styles.fabSecondary, { bottom: insets.bottom + 88, right: 16 }]}
+              style={[styles.fab, styles.fabRect, styles.fabRectOutline, { bottom: insets.bottom + 88, right: 16 }]}
               accessibilityRole="button"
               accessibilityLabel="Add new item"
             >
-              <Ionicons name="add" size={28} color="#fff" />
+              <ThemedText style={styles.fabRectLabel}>
+                add new item
+              </ThemedText>
             </Pressable>
             <Pressable
               onPress={enterSelectMode}
               style={({ pressed }) => [
                 styles.fab,
+                styles.fabRect,
+                styles.fabRectOutline,
                 { bottom: insets.bottom + 16, right: 16 },
                 pressed && styles.fabPressed,
               ]}
               accessibilityRole="button"
               accessibilityLabel="Count wears"
             >
-              <Ionicons name="shirt-outline" size={26} color="#fff" />
+              <ThemedText style={styles.fabRectLabel}>
+                +1 wear count
+              </ThemedText>
             </Pressable>
             <Pressable
               onPress={() => setFabOpen(false)}
@@ -445,6 +518,21 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "700",
   },
+  fabRect: {
+    width: "auto",
+    paddingHorizontal: 20,
+    borderRadius: 22,
+  },
+  fabRectOutline: {
+    backgroundColor: "#fff",
+    borderWidth: 1.5,
+    borderColor: "#0a7ea4",
+  },
+  fabRectLabel: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#0a7ea4",
+  },
   fabScrim: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 0,
@@ -453,6 +541,22 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: 24,
     opacity: 0.7,
+  },
+  emptyState: {
+    alignItems: "center",
+    gap: 16,
+  },
+  gmailPrompt: {
+    borderWidth: 1.5,
+    borderColor: "#0a7ea4",
+    borderRadius: 22,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+  },
+  gmailPromptText: {
+    color: "#0a7ea4",
+    fontSize: 15,
+    fontWeight: "600",
   },
   cardPressable: {
     margin: 4,

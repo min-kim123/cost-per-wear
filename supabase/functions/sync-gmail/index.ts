@@ -4,8 +4,11 @@ const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GMAIL_API = "https://gmail.googleapis.com/gmail/v1";
 const OPENAI_API = "https://api.openai.com/v1/chat/completions";
 
-// Refresh a Google access token using the stored refresh token
+// Called when user clicks "sync gmail" in the closet screen, or on a cron schedule.
+// Uses last_scanned_at from user_tokens to only fetch emails newer than the last scan.
+
 async function refreshAccessToken(refreshToken: string): Promise<string> {
+  console.log("REFRESHING ACCESS TOKEN", refreshToken);
   const res = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -23,51 +26,103 @@ async function refreshAccessToken(refreshToken: string): Promise<string> {
   return data.access_token;
 }
 
-// Search Gmail for recent purchase/receipt emails (last 24h)
-async function fetchReceiptMessageIds(accessToken: string): Promise<string[]> {
+// Search Gmail for receipt emails newer than lastScannedAt (Unix seconds).
+// Falls back to newer_than:1d if no timestamp is available.
+async function fetchReceiptMessageIds(
+  accessToken: string,
+  lastScannedAt: number | null,
+  force: boolean,
+): Promise<string[]> {
+  const dateFilter = force
+    ? ""
+    : lastScannedAt
+    ? ` after:${lastScannedAt}`
+    : " newer_than:1d";
+
   const query = encodeURIComponent(
-    "subject:(order OR receipt OR purchase OR confirmation) newer_than:1d",
+    `subject:(order OR receipt OR purchase OR confirmation)${dateFilter}`,
   );
   const res = await fetch(
-    `${GMAIL_API}/users/me/messages?q=${query}&maxResults=20`,
+    `${GMAIL_API}/users/me/messages?q=${query}&maxResults=50`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
   );
   const data = await res.json();
   return (data.messages ?? []).map((m: { id: string }) => m.id);
 }
 
-// Fetch a single email's plain-text body
+type EmailResult = {
+  id: string;
+  body: string;
+  internalDate: number; // milliseconds epoch
+};
+
 async function fetchEmailBody(
   accessToken: string,
   messageId: string,
-): Promise<string> {
+): Promise<EmailResult> {
   const res = await fetch(
     `${GMAIL_API}/users/me/messages/${messageId}?format=full`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
   );
   const data = await res.json();
 
-  const parts: Array<{ mimeType: string; body: { data?: string }; parts?: unknown[] }> =
-    data.payload?.parts ?? [data.payload];
+  const internalDate = parseInt(data.internalDate ?? "0", 10);
 
-  function extractText(
-    parts: Array<{ mimeType: string; body: { data?: string }; parts?: unknown[] }>,
-  ): string {
-    for (const part of parts) {
-      if (part.mimeType === "text/plain" && part.body?.data) {
-        return atob(part.body.data.replace(/-/g, "+").replace(/_/g, "/"));
-      }
-      if (part.parts) {
-        const nested = extractText(
-          part.parts as Array<{ mimeType: string; body: { data?: string }; parts?: unknown[] }>,
-        );
-        if (nested) return nested;
+  // Recursively find text/plain and text/html content, collecting both
+  // deno-lint-ignore no-explicit-any
+  function locateBodyData(payload: any): { text?: string; html?: string } {
+    const result: { text?: string; html?: string } = {};
+
+    if (payload.mimeType === "text/plain" && payload.body?.data) {
+      result.text = payload.body.data;
+    } else if (payload.mimeType === "text/html" && payload.body?.data) {
+      result.html = payload.body.data;
+    }
+
+    if (payload.parts) {
+      for (const part of payload.parts) {
+        const nested = locateBodyData(part);
+        if (nested.text) result.text = nested.text;
+        if (nested.html) result.html = nested.html;
       }
     }
-    return "";
+
+    return result;
   }
 
-  return extractText(parts).slice(0, 4000);
+  function decodeBase64Url(encoded: string): string {
+    try {
+      return atob(encoded.replace(/-/g, "+").replace(/_/g, "/"));
+    } catch {
+      return "";
+    }
+  }
+
+  // Strip CSS/JS/tags before sending to OpenAI to maximise useful content per token
+  function cleanHtml(html: string): string {
+    return html
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  const foundData = locateBodyData(data.payload ?? data);
+  let rawContent = "";
+
+  // Prefer HTML — retail receipts have richer structure there; fall back to plain text
+  if (foundData.html) {
+    rawContent = cleanHtml(decodeBase64Url(foundData.html));
+  } else if (foundData.text) {
+    rawContent = decodeBase64Url(foundData.text);
+  }
+
+  return {
+    id: messageId,
+    body: rawContent.slice(0, 4000),
+    internalDate,
+  };
 }
 
 type ParsedItem = {
@@ -77,7 +132,6 @@ type ParsedItem = {
   purchased_date: string | null;
 };
 
-// Use OpenAI to extract clothing items from an email body
 async function parseEmailForClothingItems(body: string): Promise<ParsedItem[]> {
   const res = await fetch(OPENAI_API, {
     method: "POST",
@@ -92,7 +146,7 @@ async function parseEmailForClothingItems(body: string): Promise<ParsedItem[]> {
         {
           role: "system",
           content:
-            "You are a shopping receipt parser. Extract clothing and fashion items from purchase receipts. " +
+            "You are a shopping receipt parser. Extract clothing/jewelry/accessories that the user has purchased from receipts. Only include items that the user has purchased, ignore advertisements or other non-purchase items." +
             "Return a JSON array of objects with fields: name (string), brand (string|null), cost (number|null), purchased_date (ISO date string|null). " +
             "Only include clothing/fashion/accessories items. If there are no clothing items, return an empty array []. " +
             "Respond with ONLY the JSON array, no explanation.",
@@ -111,7 +165,13 @@ async function parseEmailForClothingItems(body: string): Promise<ParsedItem[]> {
   }
 }
 
-Deno.serve(async (_req) => {
+Deno.serve(async (req) => {
+  let force = false;
+  try {
+    const body = await req.json();
+    force = body?.force === true;
+  } catch { /* no body or not JSON — fine */ }
+
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
@@ -121,7 +181,7 @@ Deno.serve(async (_req) => {
     // Get all users with a stored Google token
     const { data: tokens, error: tokensError } = await supabase
       .from("user_tokens")
-      .select("user_id, refresh_token, access_token, expires_at")
+      .select("user_id, refresh_token, last_scanned_at")
       .eq("provider", "google");
 
     if (tokensError) throw new Error(tokensError.message);
@@ -144,47 +204,51 @@ Deno.serve(async (_req) => {
           .eq("user_id", token.user_id)
           .eq("provider", "google");
 
-        const messageIds = await fetchReceiptMessageIds(accessToken);
+        const messageIds = await fetchReceiptMessageIds(
+          accessToken,
+          token.last_scanned_at ?? null,
+          force,
+        );
+
         if (messageIds.length === 0) {
           results.push({ user_id: token.user_id, items_added: 0 });
           continue;
         }
 
-        // Filter out already-processed messages
-        const { data: processed } = await supabase
-          .from("gmail_processed_messages")
-          .select("message_id")
-          .eq("user_id", token.user_id)
-          .in("message_id", messageIds);
-
-        const processedIds = new Set(
-          (processed ?? []).map((r: { message_id: string }) => r.message_id),
-        );
-        const newIds = messageIds.filter((id) => !processedIds.has(id));
-
         let itemsAdded = 0;
-        for (const msgId of newIds) {
-          const body = await fetchEmailBody(accessToken, msgId);
+        let maxInternalDateMs = 0;
+
+        for (const msgId of messageIds) {
+          const { body, internalDate } = await fetchEmailBody(accessToken, msgId);
           if (!body) continue;
+
+          if (internalDate > maxInternalDateMs) maxInternalDateMs = internalDate;
 
           const items = await parseEmailForClothingItems(body);
           for (const item of items) {
-            const { error: insertError } = await supabase.from("closet_items").insert({
-              user_id: token.user_id,
-              name: item.name,
-              brand: item.brand ?? null,
-              cost: item.cost ?? null,
-              purchased_date: item.purchased_date ?? null,
-              wears: 0,
-              cpw: item.cost ?? null,
-            });
+            const { error: insertError } = await supabase
+              .from("closet")
+              .insert({
+                user_id: token.user_id,
+                name: item.name,
+                brand: item.brand ?? null,
+                cost: item.cost ?? null,
+                purchased_date: item.purchased_date ?? null,
+                wears: 0,
+                cpw: item.cost ?? null,
+              });
             if (!insertError) itemsAdded++;
           }
+        }
 
-          await supabase.from("gmail_processed_messages").insert({
-            user_id: token.user_id,
-            message_id: msgId,
-          });
+        // Advance the cursor so next sync only fetches emails after this point
+        if (maxInternalDateMs > 0) {
+          const lastScannedAt = Math.floor(maxInternalDateMs / 1000) + 1;
+          await supabase
+            .from("user_tokens")
+            .update({ last_scanned_at: lastScannedAt })
+            .eq("user_id", token.user_id)
+            .eq("provider", "google");
         }
 
         results.push({ user_id: token.user_id, items_added: itemsAdded });
