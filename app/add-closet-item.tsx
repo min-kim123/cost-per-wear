@@ -1,8 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
+import * as FileSystem from "expo-file-system";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { uploadClosetItemImage } from "@/lib/closet-upload";
 import {
   ActivityIndicator,
@@ -38,6 +40,30 @@ export default function AddClosetItemScreen() {
   const [pickedUri, setPickedUri] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [picking, setPicking] = useState(false);
+
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith("image/")) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (!file) continue;
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            const dataUri = ev.target?.result as string;
+            if (dataUri) setPickedUri(dataUri);
+          };
+          reader.readAsDataURL(file);
+          break;
+        }
+      }
+    };
+    document.addEventListener("paste", handlePaste);
+    return () => document.removeEventListener("paste", handlePaste);
+  }, []);
 
   const textColor = useThemeColor({}, "text");
   const placeholderColor = useThemeColor({ light: "#8E8E93" }, "icon");
@@ -88,6 +114,43 @@ export default function AddClosetItemScreen() {
         e instanceof Error
           ? e.message
           : "Could not open camera or photo library.",
+      );
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const pasteFromClipboard = async () => {
+    if (picking || saving) return;
+    setPicking(true);
+    try {
+      const hasImage = await Clipboard.hasImageAsync();
+      if (!hasImage) {
+        Alert.alert("No image", "There is no image in your clipboard.");
+        return;
+      }
+      const result = await Clipboard.getImageAsync({ format: "png" });
+      if (!result?.data) {
+        Alert.alert("Paste failed", "Could not read image from clipboard.");
+        return;
+      }
+      if (Platform.OS === "web") {
+        // On web, expo-clipboard returns a full data URI already
+        const dataUri = result.data.startsWith("data:")
+          ? result.data
+          : `data:image/png;base64,${result.data}`;
+        setPickedUri(dataUri);
+      } else {
+        const uri = `${FileSystem.cacheDirectory}clipboard-${Date.now()}.png`;
+        await FileSystem.writeAsStringAsync(uri, result.data, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        setPickedUri(uri);
+      }
+    } catch (e) {
+      Alert.alert(
+        "Paste failed",
+        e instanceof Error ? e.message : "Could not read image from clipboard.",
       );
     } finally {
       setPicking(false);
@@ -173,7 +236,7 @@ export default function AddClosetItemScreen() {
                   color={placeholderColor}
                 />
                 <ThemedText style={[styles.previewHint, { opacity: 0.65 }]}>
-                  Use Camera or Library below (optional)
+                  Use Camera, Library, or Paste below (optional)
                 </ThemedText>
               </View>
             )}
@@ -208,6 +271,21 @@ export default function AddClosetItemScreen() {
             >
               <Ionicons name="images-outline" size={22} color={textColor} />
               <ThemedText style={styles.photoBtnLabel}>Library</ThemedText>
+            </Pressable>
+            <Pressable
+              onPress={pasteFromClipboard}
+              disabled={picking || saving}
+              style={({ pressed }) => [
+                styles.photoBtn,
+                { borderColor, backgroundColor: inputBackground },
+                pressed && styles.photoBtnPressed,
+                (picking || saving) && styles.photoBtnDisabled,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Paste image from clipboard"
+            >
+              <Ionicons name="clipboard-outline" size={22} color={textColor} />
+              <ThemedText style={styles.photoBtnLabel}>Paste</ThemedText>
             </Pressable>
           </View>
           {pickedUri ? (

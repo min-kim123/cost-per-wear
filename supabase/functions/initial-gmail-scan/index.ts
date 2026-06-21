@@ -44,22 +44,25 @@ async function fetchAllReceiptMessageIds(
   console.log("FETCHING ALL RECEIPT MESSAGE IDs", accessToken);
   const query = encodeURIComponent(
     "subject:((order OR receipt OR purchase OR confirmation) " +
-      '-off -sale -"ends soon" -free -kickoff -"shop our" -"shop the")',
+      '-off -sale -reward -executed -remind -reminder -cancel -return -"pre-order" -"ends soon" -free -kickoff -"shop our" -"shop the" -favorite -"we only" -new -limited -deal -exclusive -"up to")',
   );
   const ids: string[] = [];
   let pageToken: string | undefined;
 
-  while (ids.length < MAX_EMAILS) {
+  //repeatedly ask gmail for max MAX_EMAILS message IDs until we have MAX_EMAILS that fit the subject line filter
+  while (ids.length < MAX_EMAILS) {//asks gmail for max MAX_EMAILS message IDs
     const remaining = MAX_EMAILS - ids.length;
     console.log("REMAINING EMAILS", remaining);
-    let url = `${GMAIL_API}/users/me/messages?q=${query}&maxResults=${Math.min(remaining, 500)}`;
+    let url = `${GMAIL_API}/users/me/messages?q=${query}&maxResults=${Math.min(remaining, 500)}`;//return max 500 message IDs
     console.log("URL", url);
     if (pageToken) url += `&pageToken=${pageToken}`;
 
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
+    
     const data = await res.json();
+    console.log("Estimated emails matching subject query:", data.resultSizeEstimate);
 
     // CRITICAL FIX: If Google returns an error or a 400/500 format object instead of data,
     // catch it here before trying to loop over it.
@@ -84,6 +87,8 @@ async function fetchAllReceiptMessageIds(
 
 type EmailResult = {
   id: string;
+  subject: string;
+  from: string;
   body: string;
   internalDate: number; // milliseconds epoch
 };
@@ -185,13 +190,26 @@ async function fetchEmailBody(
     }
   }
 
-  // Strip CSS/JS/tags before sending to OpenAI to maximise useful content per token
+  // Strip CSS/JS/tags and decode HTML entities before sending to OpenAI
   function cleanHtml(html: string): string {
-    // console.log("CLEANING HTML", html);
     return html
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
       .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
       .replace(/<[^>]+>/g, " ")
+      // Remove zero-width and invisible email template filler characters
+      .replace(/[\u200b\u200c\u200d\uFEFF]/g, "")
+      // Decode common HTML entities
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&zwnj;/gi, "")
+      .replace(/&#8204;/gi, "")
+      // Decode numeric entities (e.g. &#96; or &#x60;)
+      .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+      .replace(/&#([0-9]+);/gi, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
       .replace(/\s+/g, " ")
       .trim();
   }
@@ -201,10 +219,10 @@ async function fetchEmailBody(
 
   // 1. Decode the content first
   if (foundData.html) {
-    rawContent = decodeBase64Url(foundData.html);
-    // 2. Strip the massive <style> blocks from the string IMMEDIATELY
-    rawContent = cleanHtml(rawContent);
-    console.log("CLEANED HTML", rawContent);
+    const decoded = decodeBase64Url(foundData.html);
+    console.log("ORIGINAL (decoded, before clean):", decoded.slice(0, 500));
+    rawContent = cleanHtml(decoded);
+    console.log("CLEANED (after strip + entity decode):", rawContent.slice(0, 500));
   } else if (foundData.text) {
     rawContent = decodeBase64Url(foundData.text);
   }
@@ -212,6 +230,8 @@ async function fetchEmailBody(
   // 3. Now that only text remains, it is safe to slice safely to your token limit
   return {
     id: messageId,
+    subject,
+    from: fromSender,
     body: rawContent.slice(0, MAX_BODY_CHARS),
     internalDate,
   };
@@ -266,12 +286,15 @@ async function parseEmailBatch(bodies: string[]): Promise<ParsedItem[]> {
   }
 }
 
+
+//----------------------------DENO SERVER START----------------------------
 Deno.serve(async (req) => {
   console.log("DENO SERVER REQUEST RECEIVED", req);
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
+  //authenticate the user
   try {
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
@@ -322,6 +345,7 @@ Deno.serve(async (req) => {
       })
       .eq("user_id", user.id)
       .eq("provider", "google");
+
     // Fetch up to MAX_EMAILS matching message IDs (full history, no date filter)
     const allIds = await fetchAllReceiptMessageIds(accessToken);
     if (allIds.length === 0) {
@@ -331,7 +355,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Fetch all email bodies in parallel, GMAIL_FETCH_CONCURRENCY at a time
+    // Fetch all email bodies in parallel, GMAIL_FETCH_CONCURRENCY at a time. fetchEmailBody skips blacklisted senders and domains
     const emailResults: EmailResult[] = [];
     for (let i = 0; i < allIds.length; i += GMAIL_FETCH_CONCURRENCY) {
       const chunk = allIds.slice(i, i + GMAIL_FETCH_CONCURRENCY);
@@ -342,10 +366,11 @@ Deno.serve(async (req) => {
       emailResults.push(...validEmails);
     }
     // Add your debug log:
-    console.log(`Fetched ${emailResults.length} emails`);
+    console.log(`Will send ${emailResults.length} emails to OpenAI`);
+    console.log("Subjects:", emailResults.map((e) => e.subject));
     for (const e of emailResults) {
       // console.log(`--- ${e.id} (${e.internalDate}) ---`);
-      console.log("email body: ", e.body.slice(0, 500)); // first 500 chars to keep logs readable
+      console.log("Email body: ", e.body.slice(0, 500)); // first 500 chars to keep logs readable
     }
     // Then return early so nothing below runs:
     return Response.json(

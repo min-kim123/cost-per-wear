@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
+import { LinearGradient } from "expo-linear-gradient";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import type { ImageSourcePropType } from "react-native";
@@ -7,6 +8,7 @@ import {
   ActivityIndicator,
   FlatList,
   PanResponder,
+  Platform,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -125,6 +127,10 @@ export default function ClosetScreen() {
   const placeholderColor = useThemeColor({ light: "#8E8E93" }, "icon");
   const borderColor = useThemeColor({ light: "#C6C6C8" }, "icon");
   const inputBackground = useThemeColor({ light: "#EFEFF4" }, "background");
+  const cardBackground = useThemeColor(
+    { light: "#ffffff", dark: "#1c1c1e" },
+    "background",
+  );
 
   const filteredItems = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -336,9 +342,26 @@ export default function ClosetScreen() {
                           .filter(Boolean)
                           .join(" | ")}
                       </ThemedText>
-                      <ThemedText numberOfLines={2} style={styles.itemName}>
-                        {item.name}
-                      </ThemedText>
+                      <View style={styles.nameWrap}>
+                        <ThemedText
+                          numberOfLines={1}
+                          ellipsizeMode="clip"
+                          style={[
+                            styles.itemName,
+                            Platform.OS === "web" &&
+                              ({ textOverflow: "clip" } as object),
+                          ]}
+                        >
+                          {item.name}
+                        </ThemedText>
+                        <LinearGradient
+                          colors={[`${cardBackground}00`, cardBackground]}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 0 }}
+                          style={styles.nameFade}
+                          pointerEvents="none"
+                        />
+                      </View>
                       <ThemedText>{`${formatCurrency(costPerWear)}/wear (${item.wears})`}</ThemedText>
                     </ThemedView>
                   </ThemedView>
@@ -593,7 +616,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     gap: 2,
   },
-  itemName: {},
+  nameWrap: {
+    overflow: "hidden",
+  },
+  itemName: {
+    flexShrink: 1,
+  },
+  nameFade: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    right: 0,
+    width: 28,
+  },
   itemBrand: {
     fontSize: 11,
     opacity: 0.65,
