@@ -13,5 +13,11 @@ export default ({ config }: ConfigContext) => {
       supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
       googleClientId: process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID,
     },
+    ios: {
+      bundleIdentifier: "com.minkim.costperwear",
+      config: {
+        usesNonExemptEncryption: false,
+      },
+    },
   };
 };

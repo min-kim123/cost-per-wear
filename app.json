@@ -9,7 +9,11 @@
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.minkim.costperwear",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -47,6 +51,14 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "supabaseUrl": "https://uqybrlxxproekfnjpuaa.supabase.co",
+      "supabaseAnonKey": "sb_publishable_TF7LbEoKj9FA-eqNy4IhTA_YJQokGcR",
+      "googleClientId": "372088677426-7tpn96615m405kfuf9kl146g6ovrb5mf.apps.googleusercontent.com",
+      "eas": {
+        "projectId": "a56c0314-e30a-4b13-b3ee-f4aa644e5d48"
+      }
     }
   }
 }

@@ -11,6 +11,11 @@ export const unstable_settings = {
   anchor: "(tabs)",
 };
 
+const DEV_SKIP_AUTH =
+  process.env.EXPO_PUBLIC_DEV_SKIP_AUTH === "true";
+const DEV_EMAIL = process.env.EXPO_PUBLIC_DEV_EMAIL ?? "";
+const DEV_PASSWORD = process.env.EXPO_PUBLIC_DEV_PASSWORD ?? "";
+
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const segments = useSegments();
@@ -19,6 +24,22 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
+    if (DEV_SKIP_AUTH) {
+      const supabase = getSupabase();
+      supabase.auth.getSession().then(async ({ data: { session } }) => {
+        if (!session && DEV_EMAIL && DEV_PASSWORD) {
+          await supabase.auth.signInWithPassword({
+            email: DEV_EMAIL,
+            password: DEV_PASSWORD,
+          });
+        }
+        const inAuthScreen = segmentsRef.current[0] === "auth";
+        if (inAuthScreen) router.replace("/(tabs)");
+        setChecked(true);
+      });
+      return;
+    }
+
     const supabase = getSupabase();
 
     supabase.auth.getSession().then(({ data: { session } }) => {

@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { getSupabase } from "@/supabase-client";
 
 const KEY = "@cpw_custom_brands_v1";
 
@@ -37,6 +38,20 @@ export async function getBrands(): Promise<string[]> {
   } catch {
     cache = [...DEFAULT_BRANDS];
     return cache;
+  }
+}
+
+export async function getClosetBrandCounts(): Promise<Record<string, number>> {
+  try {
+    const { data } = await getSupabase().from("closet").select("brand");
+    const counts: Record<string, number> = {};
+    for (const row of data ?? []) {
+      const b = (row.brand as string | null)?.trim();
+      if (b) counts[b] = (counts[b] ?? 0) + 1;
+    }
+    return counts;
+  } catch {
+    return {};
   }
 }
 

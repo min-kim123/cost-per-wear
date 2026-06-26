@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  FlatList,
   Pressable,
+  ScrollView,
   StyleSheet,
   TextInput,
   View,
 } from "react-native";
 
 import { useThemeColor } from "@/hooks/use-theme-color";
-import { addBrand, getBrands } from "@/lib/brands";
+import { addBrand, getBrands, getClosetBrandCounts } from "@/lib/brands";
 import { ThemedText } from "./themed-text";
 
 type Props = {
@@ -18,10 +18,10 @@ type Props = {
   placeholder?: string;
 };
 
-const MAX_SUGGESTIONS = 6;
 
 export function BrandInput({ value, onChange, editable = true, placeholder = "e.g. Uniqlo" }: Props) {
   const [allBrands, setAllBrands] = useState<string[]>([]);
+  const [brandCounts, setBrandCounts] = useState<Record<string, number>>({});
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const inputRef = useRef<TextInput>(null);
@@ -35,17 +35,18 @@ export function BrandInput({ value, onChange, editable = true, placeholder = "e.
 
   useEffect(() => {
     getBrands().then(setAllBrands);
+    getClosetBrandCounts().then(setBrandCounts);
   }, []);
 
   function computeSuggestions(text: string) {
     const q = text.trim().toLowerCase();
-    if (!q) return [];
-    const matches = allBrands
-      .filter((b) => b.toLowerCase().includes(q))
-      .slice(0, MAX_SUGGESTIONS);
+    const sorted = [...allBrands].sort(
+      (a, b) => (brandCounts[b] ?? 0) - (brandCounts[a] ?? 0),
+    );
+    if (!q) return sorted;
+    const matches = sorted.filter((b) => b.toLowerCase().includes(q));
     const exactMatch = allBrands.some((b) => b.toLowerCase() === q);
-    if (!exactMatch && text.trim()) {
-      // Put "Add <brand>" option at the end
+    if (!exactMatch) {
       return [...matches, `__add__:${text.trim()}`];
     }
     return matches;
@@ -76,7 +77,7 @@ export function BrandInput({ value, onChange, editable = true, placeholder = "e.
   function handleFocus() {
     const next = computeSuggestions(value);
     setSuggestions(next);
-    setOpen(next.length > 0);
+    setOpen(true);
   }
 
   function handleBlur() {
@@ -102,16 +103,12 @@ export function BrandInput({ value, onChange, editable = true, placeholder = "e.
 
       {open && suggestions.length > 0 && (
         <View style={[styles.dropdown, { borderColor, backgroundColor: dropdownBackground }]}>
-          <FlatList
-            data={suggestions}
-            keyExtractor={(item) => item}
-            keyboardShouldPersistTaps="always"
-            scrollEnabled={suggestions.length > MAX_SUGGESTIONS}
-            renderItem={({ item, index }) => {
+          <ScrollView keyboardShouldPersistTaps="always" bounces={false}>
+            {suggestions.map((item, index) => {
               const isAdd = item.startsWith("__add__:");
               const label = isAdd ? `Add "${item.slice("__add__:".length)}"` : item;
               return (
-                <>
+                <View key={item}>
                   {index > 0 && (
                     <View style={[styles.separator, { backgroundColor: separatorColor }]} />
                   )}
@@ -129,10 +126,10 @@ export function BrandInput({ value, onChange, editable = true, placeholder = "e.
                       {label}
                     </ThemedText>
                   </Pressable>
-                </>
+                </View>
               );
-            }}
-          />
+            })}
+          </ScrollView>
         </View>
       )}
     </View>
@@ -155,6 +152,7 @@ const styles = StyleSheet.create({
     top: 46,
     left: 0,
     right: 0,
+    maxHeight: 220,
     borderWidth: 1,
     borderRadius: 10,
     overflow: "hidden",

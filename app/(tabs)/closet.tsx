@@ -362,7 +362,11 @@ export default function ClosetScreen() {
                           pointerEvents="none"
                         />
                       </View>
-                      <ThemedText>{`${formatCurrency(costPerWear)}/wear (${item.wears})`}</ThemedText>
+                      <ThemedText>
+                        {formatCurrency(costPerWear)}
+                        <ThemedText style={styles.wearSuffix}>{"/wear "}</ThemedText>
+                        {`(${item.wears})`}
+                      </ThemedText>
                     </ThemedView>
                   </ThemedView>
                 </Pressable>
@@ -605,11 +609,11 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: 12,
     overflow: "hidden",
-    backgroundColor: "rgba(0,0,0,0.25)",
   },
   image: {
     width: "100%",
     aspectRatio: 3 / 4,
+    borderRadius: 12,
   },
   cardContent: {
     paddingVertical: 6,
@@ -633,5 +637,9 @@ const styles = StyleSheet.create({
     fontSize: 11,
     opacity: 0.65,
     textAlign: "center",
+  },
+  wearSuffix: {
+    fontSize: 11,
+    opacity: 0.55,
   },
 });

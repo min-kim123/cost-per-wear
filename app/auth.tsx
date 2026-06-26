@@ -33,7 +33,9 @@ export default function AuthScreen() {
     setError(null);
     setLoading(true);
     try {
-      const redirectUri = AuthSession.makeRedirectUri();
+      const redirectUri = AuthSession.makeRedirectUri({
+        scheme: "costperwear",
+      });
       const supabase = getSupabase();
 
       const { data, error: oauthError } = await supabase.auth.signInWithOAuth({

@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
@@ -9,14 +9,14 @@ import { uploadClosetItemImage } from "@/lib/closet-upload";
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
+  Keyboard,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   TextInput,
   View,
 } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
 
 import { BrandInput } from "@/components/brand-input";
 import { ThemedText } from "@/components/themed-text";
@@ -204,103 +204,98 @@ export default function AddClosetItemScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
+    <KeyboardAwareScrollView
       style={styles.flex}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      keyboardShouldPersistTaps="handled"
+      contentContainerStyle={styles.scrollContent}
+      enableOnAndroid
+      extraScrollHeight={Platform.OS === "ios" ? 20 : 80}
     >
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={styles.scrollContent}
-      >
         <ThemedView style={styles.container}>
-          <ThemedText type="defaultSemiBold" style={styles.label}>
-            Photo
-          </ThemedText>
-          <View
-            style={[styles.previewWrap, { borderColor }]}
-            accessibilityLabel={
-              pickedUri ? "Selected item photo" : "Item photo preview"
-            }
-          >
-            {pickedUri ? (
-              <Image
-                source={{ uri: pickedUri }}
-                style={styles.previewImage}
-                contentFit="cover"
-              />
-            ) : (
-              <View style={styles.previewPlaceholder}>
-                <Ionicons
-                  name="image-outline"
-                  size={40}
-                  color={placeholderColor}
+          <View style={styles.photoRow}>
+            <View
+              style={[styles.previewWrap, { borderColor }]}
+              accessibilityLabel={
+                pickedUri ? "Selected item photo" : "Item photo preview"
+              }
+            >
+              {pickedUri ? (
+                <Image
+                  source={{ uri: pickedUri }}
+                  style={styles.previewImage}
+                  contentFit="cover"
                 />
-                <ThemedText style={[styles.previewHint, { opacity: 0.65 }]}>
-                  Use Camera, Library, or Paste below (optional)
-                </ThemedText>
-              </View>
-            )}
+              ) : (
+                <View style={styles.previewPlaceholder}>
+                  <Ionicons
+                    name="image-outline"
+                    size={32}
+                    color={placeholderColor}
+                  />
+                </View>
+              )}
+            </View>
+            <View style={styles.photoActions}>
+              <Pressable
+                onPress={() => runPicker("camera")}
+                disabled={picking || saving}
+                style={({ pressed }) => [
+                  styles.photoBtn,
+                  { borderColor, backgroundColor: inputBackground },
+                  pressed && styles.photoBtnPressed,
+                  (picking || saving) && styles.photoBtnDisabled,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Take photo"
+              >
+                <Ionicons name="camera-outline" size={20} color={textColor} />
+                <ThemedText style={styles.photoBtnLabel}>Camera</ThemedText>
+              </Pressable>
+              <Pressable
+                onPress={() => runPicker("library")}
+                disabled={picking || saving}
+                style={({ pressed }) => [
+                  styles.photoBtn,
+                  { borderColor, backgroundColor: inputBackground },
+                  pressed && styles.photoBtnPressed,
+                  (picking || saving) && styles.photoBtnDisabled,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Choose from library"
+              >
+                <Ionicons name="images-outline" size={20} color={textColor} />
+                <ThemedText style={styles.photoBtnLabel}>Library</ThemedText>
+              </Pressable>
+              <Pressable
+                onPress={pasteFromClipboard}
+                disabled={picking || saving}
+                style={({ pressed }) => [
+                  styles.photoBtn,
+                  { borderColor, backgroundColor: inputBackground },
+                  pressed && styles.photoBtnPressed,
+                  (picking || saving) && styles.photoBtnDisabled,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Paste image from clipboard"
+              >
+                <Ionicons name="clipboard-outline" size={0} color={textColor} />
+                <ThemedText style={styles.photoBtnLabel}>Paste</ThemedText>
+              </Pressable>
+              {pickedUri ? (
+                <Pressable
+                  onPress={() => setPickedUri(null)}
+                  disabled={saving}
+                  style={styles.clearPhoto}
+                  accessibilityRole="button"
+                  accessibilityLabel="Remove photo"
+                >
+                  <ThemedText type="link" style={styles.clearPhotoText}>
+                    Remove Photo
+                  </ThemedText>
+                </Pressable>
+              ) : null}
+            </View>
           </View>
-          <View style={styles.photoActions}>
-            <Pressable
-              onPress={() => runPicker("camera")}
-              disabled={picking || saving}
-              style={({ pressed }) => [
-                styles.photoBtn,
-                { borderColor, backgroundColor: inputBackground },
-                pressed && styles.photoBtnPressed,
-                (picking || saving) && styles.photoBtnDisabled,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Take photo"
-            >
-              <Ionicons name="camera-outline" size={22} color={textColor} />
-              <ThemedText style={styles.photoBtnLabel}>Camera</ThemedText>
-            </Pressable>
-            <Pressable
-              onPress={() => runPicker("library")}
-              disabled={picking || saving}
-              style={({ pressed }) => [
-                styles.photoBtn,
-                { borderColor, backgroundColor: inputBackground },
-                pressed && styles.photoBtnPressed,
-                (picking || saving) && styles.photoBtnDisabled,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Choose from library"
-            >
-              <Ionicons name="images-outline" size={22} color={textColor} />
-              <ThemedText style={styles.photoBtnLabel}>Library</ThemedText>
-            </Pressable>
-            <Pressable
-              onPress={pasteFromClipboard}
-              disabled={picking || saving}
-              style={({ pressed }) => [
-                styles.photoBtn,
-                { borderColor, backgroundColor: inputBackground },
-                pressed && styles.photoBtnPressed,
-                (picking || saving) && styles.photoBtnDisabled,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Paste image from clipboard"
-            >
-              <Ionicons name="clipboard-outline" size={22} color={textColor} />
-              <ThemedText style={styles.photoBtnLabel}>Paste</ThemedText>
-            </Pressable>
-          </View>
-          {pickedUri ? (
-            <Pressable
-              onPress={() => setPickedUri(null)}
-              disabled={saving}
-              style={styles.clearPhoto}
-              accessibilityRole="button"
-              accessibilityLabel="Remove photo"
-            >
-              <ThemedText type="link" style={styles.clearPhotoText}>
-                Remove photo
-              </ThemedText>
-            </Pressable>
-          ) : null}
 
           <ThemedText type="defaultSemiBold" style={styles.label}>
             Brand
@@ -317,6 +312,8 @@ export default function AddClosetItemScreen() {
             onChangeText={setName}
             style={inputStyle}
             editable={!saving}
+            returnKeyType="done"
+            onSubmitEditing={Keyboard.dismiss}
           />
           <ThemedText type="defaultSemiBold" style={styles.label}>
             Cost ($)
@@ -330,6 +327,8 @@ export default function AddClosetItemScreen() {
             keyboardType="decimal-pad"
             style={inputStyle}
             editable={!saving}
+            returnKeyType="done"
+            onSubmitEditing={Keyboard.dismiss}
           />
           <ThemedText type="defaultSemiBold" style={styles.label}>
             Previous wears
@@ -343,6 +342,8 @@ export default function AddClosetItemScreen() {
             keyboardType="number-pad"
             style={inputStyle}
             editable={!saving}
+            returnKeyType="done"
+            onSubmitEditing={Keyboard.dismiss}
           />
 
           <Pressable
@@ -369,8 +370,7 @@ export default function AddClosetItemScreen() {
             )}
           </Pressable>
         </ThemedView>
-      </ScrollView>
-    </KeyboardAvoidingView>
+    </KeyboardAwareScrollView>
   );
 }
 
@@ -390,15 +390,19 @@ const styles = StyleSheet.create({
   label: {
     marginTop: 12,
   },
-  previewWrap: {
+  photoRow: {
+    flexDirection: "row",
+    gap: 10,
     marginTop: 4,
+    alignItems: "stretch",
+  },
+  previewWrap: {
     borderWidth: 1,
     borderRadius: 12,
     overflow: "hidden",
     aspectRatio: 3 / 4,
-    maxHeight: 220,
-    alignSelf: "center",
-    width: "100%",
+    width: 160,
+    flexShrink: 0,
   },
   previewImage: {
     width: "100%",
@@ -408,30 +412,24 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    padding: 16,
-    gap: 8,
-  },
-  previewHint: {
-    fontSize: 14,
-    textAlign: "center",
   },
   photoActions: {
-    flexDirection: "row",
-    gap: 10,
-    marginTop: 10,
+    flex: 1,
+    flexDirection: "column",
+    gap: 8,
+    justifyContent: "center",
   },
   photoBtn: {
-    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    height: 46,
+    height: 54,
     borderRadius: 10,
     borderWidth: 1,
   },
   photoBtnLabel: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "600",
   },
   photoBtnPressed: {
@@ -442,11 +440,10 @@ const styles = StyleSheet.create({
   },
   clearPhoto: {
     alignSelf: "center",
-    marginTop: 6,
-    paddingVertical: 4,
+    paddingVertical: 2,
   },
   clearPhotoText: {
-    fontSize: 15,
+    fontSize: 13,
   },
   input: {
     height: 44,
