@@ -1,6 +1,6 @@
 import { useFocusEffect, useRouter } from "expo-router";
 import React, { useCallback, useMemo, useState } from "react";
-import { FlatList, PanResponder, Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { DayTileOutfits } from "@/components/day-tile-outfits";
 import { ThemedText } from "@/components/themed-text";
@@ -9,6 +9,7 @@ import {
   type DayOutfit,
   getMonthGrid,
   getOutfitsMap,
+  getTodayDateKey,
 } from "@/lib/outfit-storage";
 import { getSupabase } from "@/supabase-client";
 
@@ -18,29 +19,53 @@ type Cell = {
   outfits: DayOutfit[];
 };
 
-async function loadItemImageMap(): Promise<Record<string, string>> {
+type ItemMeta = { image: string | null; cost: number; wears: number };
+
+async function loadItemMetaMap(): Promise<Record<string, ItemMeta>> {
   const { data } = await getSupabase()
     .from("closet")
-    .select("id, image");
-  const map: Record<string, string> = {};
+    .select("id, image, cost, wears");
+  const map: Record<string, ItemMeta> = {};
   for (const row of data ?? []) {
-    if (row.image) map[row.id as string] = row.image as string;
+    const costRaw = row.cost as number | string | null;
+    const cost =
+      typeof costRaw === "string"
+        ? parseFloat(costRaw)
+        : typeof costRaw === "number"
+          ? costRaw
+          : 0;
+    map[row.id as string] = {
+      image: (row.image as string | null) ?? null,
+      cost: Number.isFinite(cost) && cost >= 0 ? cost : 0,
+      wears: typeof row.wears === "number" && row.wears >= 0 ? row.wears : 0,
+    };
   }
   return map;
+}
+
+function outfitCostPerWear(
+  itemIds: string[],
+  metaMap: Record<string, ItemMeta>,
+): number {
+  return itemIds.reduce((sum, id) => {
+    const meta = metaMap[id];
+    if (!meta) return sum;
+    return sum + meta.cost / Math.max(meta.wears, 1);
+  }, 0);
 }
 
 export default function CalendarScreen() {
   const router = useRouter();
   const [outfitsByDay, setOutfitsByDay] = useState<Record<string, DayOutfit[]>>({});
-  const [itemImageMap, setItemImageMap] = useState<Record<string, string>>({});
+  const [itemMetaMap, setItemMetaMap] = useState<Record<string, ItemMeta>>({});
 
   useFocusEffect(
     useCallback(() => {
       let active = true;
-      Promise.all([getOutfitsMap(), loadItemImageMap()]).then(([outfits, images]) => {
+      Promise.all([getOutfitsMap(), loadItemMetaMap()]).then(([outfits, meta]) => {
         if (active) {
           setOutfitsByDay(outfits);
-          setItemImageMap(images);
+          setItemMetaMap(meta);
         }
       });
       return () => {
@@ -49,7 +74,9 @@ export default function CalendarScreen() {
     }, []),
   );
 
-  const { year, monthIndex, cells } = useMemo(() => {
+  const todayKey = getTodayDateKey();
+
+  const { year, monthIndex, rows } = useMemo(() => {
     const d = new Date();
     const y = d.getFullYear();
     const m = d.getMonth();
@@ -58,25 +85,10 @@ export default function CalendarScreen() {
       ...c,
       outfits: c.dateKey ? outfitsByDay[c.dateKey] ?? [] : [],
     }));
-    return { year: y, monthIndex: m, cells: list };
+    const chunks: Cell[][] = [];
+    for (let i = 0; i < list.length; i += 7) chunks.push(list.slice(i, i + 7));
+    return { year: y, monthIndex: m, rows: chunks };
   }, [outfitsByDay]);
-
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_event, gestureState) => {
-          const { dx, dy } = gestureState;
-          return Math.abs(dx) > 20 && Math.abs(dx) > Math.abs(dy);
-        },
-        onPanResponderRelease: (_event, gestureState) => {
-          const { dx, vx } = gestureState;
-          if (dx < -50 && Math.abs(vx) > 0.2) {
-            router.replace("/");
-          }
-        },
-      }),
-    [router],
-  );
 
   const monthLabel = new Date(year, monthIndex, 1).toLocaleString(undefined, {
     month: "long",
@@ -84,7 +96,7 @@ export default function CalendarScreen() {
   });
 
   return (
-    <ThemedView style={styles.container} {...panResponder.panHandlers}>
+    <ThemedView style={styles.container}>
       <View style={styles.monthHeader}>
         <ThemedText type="subtitle">{monthLabel}</ThemedText>
       </View>
@@ -96,53 +108,65 @@ export default function CalendarScreen() {
         ))}
       </View>
       <View style={styles.gridFrame}>
-        <FlatList
-          data={cells}
-          keyExtractor={(_, index) => `c-${index}`}
-          numColumns={7}
-          scrollEnabled={false}
-          contentContainerStyle={styles.listContent}
-          renderItem={({ item }) => {
-            // Collect all item IDs worn that day across all outfits, deduplicated,
-            // mapped to their closet image URLs (skip items without images).
-            const imageUris = Array.from(
-              new Set(item.outfits.flatMap((o) => o.itemIds)),
-            )
-              .map((id) => itemImageMap[id])
-              .filter(Boolean) as string[];
+        {rows.map((row, rowIndex) => (
+          <View key={rowIndex} style={styles.gridRow}>
+            {row.map((item, colIndex) => {
+              const allItemIds = Array.from(
+                new Set(item.outfits.flatMap((o) => o.itemIds)),
+              );
+              const imageUris = allItemIds
+                .map((id) => itemMetaMap[id]?.image)
+                .filter(Boolean) as string[];
 
-            return (
-              <View style={styles.dayCell}>
-                {item.day != null ? (
-                  <Pressable
-                    onPress={() => {
-                      if (item.dateKey) {
-                        router.push(`/day-outfits/${item.dateKey}`);
+              const totalCpw = item.outfits.reduce(
+                (sum, o) => sum + outfitCostPerWear(o.itemIds, itemMetaMap),
+                0,
+              );
+              const hasCpw = item.outfits.length > 0 && totalCpw > 0;
+              const isToday = item.dateKey === todayKey;
+
+              return (
+                <View key={colIndex} style={styles.dayCell}>
+                  {item.day != null ? (
+                    <Pressable
+                      onPress={() => {
+                        if (item.dateKey) {
+                          router.push(`/day-outfits/${item.dateKey}`);
+                        }
+                      }}
+                      style={({ pressed }) => [
+                        styles.dayCellPressable,
+                        pressed && styles.dayCellPressablePressed,
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel={
+                        item.dateKey
+                          ? `Outfits for ${item.dateKey}`
+                          : `Day ${item.day}`
                       }
-                    }}
-                    style={({ pressed }) => [
-                      styles.dayCellPressable,
-                      pressed && styles.dayCellPressablePressed,
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel={
-                      item.dateKey
-                        ? `Outfits for ${item.dateKey}`
-                        : `Day ${item.day}`
-                    }
-                  >
-                    <Text style={styles.dayLabel}>{item.day}</Text>
-                    <View style={styles.thumbnailWrapper}>
-                      <DayTileOutfits imageUris={imageUris} />
-                    </View>
-                  </Pressable>
-                ) : (
-                  <View style={styles.emptyCell} />
-                )}
-              </View>
-            );
-          }}
-        />
+                    >
+                      <View style={isToday ? styles.todayCircle : undefined}>
+                        <Text style={[styles.dayLabel, isToday && styles.dayLabelToday]}>
+                          {item.day}
+                        </Text>
+                      </View>
+                      <View style={styles.thumbnailWrapper}>
+                        <DayTileOutfits imageUris={imageUris} />
+                      </View>
+                      {hasCpw && (
+                        <Text style={styles.cpwLabel}>
+                          ${totalCpw.toFixed(2)}
+                        </Text>
+                      )}
+                    </Pressable>
+                  ) : (
+                    <View style={styles.emptyCell} />
+                  )}
+                </View>
+              );
+            })}
+          </View>
+        ))}
       </View>
     </ThemedView>
   );
@@ -175,23 +199,25 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   gridFrame: {
+    flex: 1,
     marginHorizontal: 16,
+    marginBottom: 16,
     borderTopWidth: 1,
     borderLeftWidth: 1,
     borderColor: GRID_LINE,
   },
-  listContent: {
-    paddingBottom: 24,
+  gridRow: {
+    flex: 1,
+    flexDirection: "row",
   },
   dayCell: {
     flex: 1,
     alignItems: "center",
-    justifyContent: "center",
-    minHeight: 68,
-    paddingVertical: 6,
+    justifyContent: "flex-start",
     borderRightWidth: 1,
     borderBottomWidth: 1,
     borderColor: GRID_LINE,
+    overflow: "hidden",
   },
   dayCellPressable: {
     flex: 1,
@@ -199,22 +225,43 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "flex-start",
     paddingTop: 2,
+    paddingBottom: 3,
   },
   dayCellPressablePressed: {
     opacity: 0.65,
   },
   emptyCell: {
     flex: 1,
-    minHeight: 56,
   },
   thumbnailWrapper: {
-    width: 36,
-    height: 36,
+    flex: 1,
+    alignSelf: "stretch",
     overflow: "hidden",
+    borderRadius: 6,
     marginBottom: 4,
+    marginHorizontal: 3,
   },
   dayLabel: {
     fontSize: 11,
     fontWeight: "600",
+  },
+  todayCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "#ffb361",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 1,
+  },
+  dayLabelToday: {
+    color: "#fff",
+  },
+  cpwLabel: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: "#ffb361",
+    marginTop: 2,
+    letterSpacing: 0.2,
   },
 });

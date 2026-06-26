@@ -112,6 +112,18 @@ export async function saveOutfitForToday(itemIds: string[]): Promise<void> {
   await saveOutfits(outfits);
 }
 
+export async function saveOutfitItemsOnly(
+  itemIds: string[],
+  dateKey?: string,
+): Promise<void> {
+  const key = dateKey ?? getTodayDateKey();
+  const entryId = `${key}-${Date.now()}`;
+  const outfits = await loadOutfits();
+  const list = outfits[key] ?? [];
+  outfits[key] = [...list, { id: entryId, photoUri: "", itemIds: [...itemIds] }];
+  await saveOutfits(outfits);
+}
+
 export async function deleteOutfit(dateKey: string, outfitId: string): Promise<void> {
   const outfits = await loadOutfits();
   const list = outfits[dateKey] ?? [];

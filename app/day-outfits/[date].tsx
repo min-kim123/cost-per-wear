@@ -160,13 +160,36 @@ export default function DayOutfitsScreen() {
                   </Pressable>
                 </View>
 
-                <Image
-                  source={{ uri: item.photoUri }}
-                  style={styles.photo}
-                  contentFit="cover"
-                />
+                {item.photoUri ? (
+                  <Image
+                    source={{ uri: item.photoUri }}
+                    style={styles.photo}
+                    contentFit="cover"
+                  />
+                ) : itemsWithData.length > 0 ? (
+                  <View style={styles.itemGrid}>
+                    {itemsWithData.map(({ id, name, image }) => (
+                      <View key={id} style={styles.itemGridThumb}>
+                        {image ? (
+                          <Image
+                            source={{ uri: image }}
+                            style={styles.itemGridImage}
+                            contentFit="cover"
+                          />
+                        ) : (
+                          <View style={styles.itemThumbPlaceholder}>
+                            <Ionicons name="shirt-outline" size={24} color="rgba(128,128,128,0.6)" />
+                          </View>
+                        )}
+                        <ThemedText numberOfLines={2} style={styles.itemThumbLabel}>
+                          {name}
+                        </ThemedText>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
 
-                {itemsWithData.length > 0 && (
+                {item.photoUri && itemsWithData.length > 0 && (
                   <>
                     <ThemedText style={styles.itemsLabel}>Items worn</ThemedText>
                     <ScrollView
@@ -260,6 +283,23 @@ const styles = StyleSheet.create({
   itemsLabel: {
     fontWeight: "600",
     marginTop: 4,
+  },
+  itemGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    paddingVertical: 4,
+  },
+  itemGridThumb: {
+    width: "22%",
+    alignItems: "center",
+    gap: 4,
+  },
+  itemGridImage: {
+    width: "100%",
+    aspectRatio: 3 / 4,
+    borderRadius: 8,
+    backgroundColor: "rgba(128,128,128,0.15)",
   },
   itemStrip: {
     gap: 10,

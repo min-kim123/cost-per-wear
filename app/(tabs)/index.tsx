@@ -1,11 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { Image } from "expo-image";
-import { useMemo, useCallback, useRef, useState, useEffect } from "react";
+import { useCallback, useRef, useState, useEffect } from "react";
 import { useRouter } from "expo-router";
 import {
   Alert,
-  PanResponder,
   StyleSheet,
   View,
   TouchableOpacity,
@@ -31,25 +30,6 @@ export default function HomeScreen() {
       setCameraReady(false);
     });
   }, []);
-
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_event, gestureState) => {
-          const { dx, dy } = gestureState;
-          return Math.abs(dx) > 20 && Math.abs(dx) > Math.abs(dy);
-        },
-        onPanResponderRelease: (_event, gestureState) => {
-          const { dx, vx } = gestureState;
-          if (dx < -50 && Math.abs(vx) > 0.2) {
-            router.push("/(tabs)/closet");
-          } else if (dx > 50 && Math.abs(vx) > 0.2) {
-            router.push("/(tabs)/calendar");
-          }
-        },
-      }),
-    [router],
-  );
 
   const handleCapture = useCallback(async () => {
     if (!cameraRef.current || !cameraReady || capturing) return;
@@ -98,10 +78,8 @@ export default function HomeScreen() {
     );
   }
 
-  const panHandlers = previewUri ? {} : panResponder.panHandlers;
-
   return (
-    <View style={styles.container} {...panHandlers}>
+    <View style={styles.container}>
       {previewUri ? (
         <>
           <Image source={{ uri: previewUri }} style={StyleSheet.absoluteFill} contentFit="cover" />

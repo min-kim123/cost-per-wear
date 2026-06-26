@@ -18,8 +18,12 @@ type Props = {
   placeholder?: string;
 };
 
-
-export function BrandInput({ value, onChange, editable = true, placeholder = "e.g. Uniqlo" }: Props) {
+export function BrandInput({
+  value,
+  onChange,
+  editable = true,
+  placeholder = "e.g. Uniqlo",
+}: Props) {
   const [allBrands, setAllBrands] = useState<string[]>([]);
   const [brandCounts, setBrandCounts] = useState<Record<string, number>>({});
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -89,7 +93,10 @@ export function BrandInput({ value, onChange, editable = true, placeholder = "e.
     <View style={styles.wrapper}>
       <TextInput
         ref={inputRef}
-        style={[styles.input, { color: textColor, borderColor, backgroundColor: inputBackground }]}
+        style={[
+          styles.input,
+          { color: textColor, borderColor, backgroundColor: inputBackground },
+        ]}
         placeholder={placeholder}
         placeholderTextColor={placeholderColor}
         value={value}
@@ -102,15 +109,27 @@ export function BrandInput({ value, onChange, editable = true, placeholder = "e.
       />
 
       {open && suggestions.length > 0 && (
-        <View style={[styles.dropdown, { borderColor, backgroundColor: dropdownBackground }]}>
+        <View
+          style={[
+            styles.dropdown,
+            { borderColor, backgroundColor: dropdownBackground },
+          ]}
+        >
           <ScrollView keyboardShouldPersistTaps="always" bounces={false}>
             {suggestions.map((item, index) => {
               const isAdd = item.startsWith("__add__:");
-              const label = isAdd ? `Add "${item.slice("__add__:".length)}"` : item;
+              const label = isAdd
+                ? `Add "${item.slice("__add__:".length)}"`
+                : item;
               return (
                 <View key={item}>
                   {index > 0 && (
-                    <View style={[styles.separator, { backgroundColor: separatorColor }]} />
+                    <View
+                      style={[
+                        styles.separator,
+                        { backgroundColor: separatorColor },
+                      ]}
+                    />
                   )}
                   <Pressable
                     onPress={() => handleSelect(item)}

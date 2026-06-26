@@ -1,19 +1,20 @@
+import { uploadClosetItemImage } from "@/lib/closet-upload";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
-import { uploadClosetItemImage } from "@/lib/closet-upload";
 import {
-  ActivityIndicator,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  TextInput,
-  View,
+    ActivityIndicator,
+    Alert,
+    KeyboardAvoidingView,
+    Modal,
+    Platform,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    TextInput,
+    View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -29,7 +30,6 @@ const PICKER_OPTIONS: ImagePicker.ImagePickerOptions = {
   aspect: [3, 4],
   quality: 0.85,
 };
-
 
 export default function EditClosetItemScreen() {
   const router = useRouter();
@@ -48,6 +48,7 @@ export default function EditClosetItemScreen() {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
   const [picking, setPicking] = useState(false);
 
   const textColor = useThemeColor({}, "text");
@@ -100,19 +101,27 @@ export default function EditClosetItemScreen() {
           setImageCleared(false);
         }
       } else {
-        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        const { status } =
+          await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (status !== "granted") {
-          Alert.alert("Photo library", "Allow photo library access in Settings.");
+          Alert.alert(
+            "Photo library",
+            "Allow photo library access in Settings.",
+          );
           return;
         }
-        const result = await ImagePicker.launchImageLibraryAsync(PICKER_OPTIONS);
+        const result =
+          await ImagePicker.launchImageLibraryAsync(PICKER_OPTIONS);
         if (!result.canceled && result.assets[0]?.uri) {
           setPickedUri(result.assets[0].uri);
           setImageCleared(false);
         }
       }
     } catch (e) {
-      Alert.alert("Photo", e instanceof Error ? e.message : "Could not open picker.");
+      Alert.alert(
+        "Photo",
+        e instanceof Error ? e.message : "Could not open picker.",
+      );
     } finally {
       setPicking(false);
     }
@@ -132,12 +141,15 @@ export default function EditClosetItemScreen() {
     const parsed = parseFloat(costText.replace(/,/g, ""));
     const cost = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
     const parsedWears = parseInt(wearsText, 10);
-    const wears = Number.isFinite(parsedWears) && parsedWears >= 0 ? parsedWears : 0;
+    const wears =
+      Number.isFinite(parsedWears) && parsedWears >= 0 ? parsedWears : 0;
 
     setSaving(true);
     try {
       const supabase = getSupabase();
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
 
       let image: string | null;
       if (pickedUri) {
@@ -156,7 +168,10 @@ export default function EditClosetItemScreen() {
       if (error) throw new Error(error.message);
       router.back();
     } catch (e) {
-      Alert.alert("Could not save", e instanceof Error ? e.message : "Unknown error");
+      Alert.alert(
+        "Could not save",
+        e instanceof Error ? e.message : "Unknown error",
+      );
     } finally {
       setSaving(false);
     }
@@ -173,7 +188,10 @@ export default function EditClosetItemScreen() {
       router.back();
     } catch (e) {
       setConfirmingDelete(false);
-      Alert.alert("Could not delete", e instanceof Error ? e.message : "Unknown error");
+      Alert.alert(
+        "Could not delete",
+        e instanceof Error ? e.message : "Unknown error",
+      );
     } finally {
       setDeleting(false);
     }
@@ -200,17 +218,100 @@ export default function EditClosetItemScreen() {
         options={{
           headerRight: () => (
             <Pressable
-              onPress={() => setConfirmingDelete(true)}
-              disabled={busy || confirmingDelete}
+              onPress={() => setShowMenu(true)}
+              disabled={busy}
               style={({ pressed }) => [pressed && { opacity: 0.5 }]}
               accessibilityRole="button"
-              accessibilityLabel="Delete item"
+              accessibilityLabel="More options"
             >
-              <Ionicons name="trash-outline" size={22} color="#C00" />
+              <Ionicons name="ellipsis-horizontal" size={22} color="#666" />
             </Pressable>
           ),
         }}
       />
+
+      <Modal
+        visible={showMenu}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowMenu(false)}
+      >
+        <Pressable
+          style={styles.menuOverlay}
+          onPress={() => setShowMenu(false)}
+        >
+          <View style={styles.menuSheet}>
+            <View style={styles.menuHandle} />
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.menuItem,
+                pressed && styles.menuItemPressed,
+              ]}
+              onPress={() => {
+                setShowMenu(false);
+                Alert.alert("Coming soon", "Archive is not yet available.");
+              }}
+            >
+              <Ionicons name="archive-outline" size={22} color="#888" />
+              <ThemedText style={[styles.menuItemText, { color: "#888" }]}>
+                Archive
+              </ThemedText>
+              <ThemedText style={styles.menuItemBadge}>Soon</ThemedText>
+            </Pressable>
+
+            <View style={styles.menuDivider} />
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.menuItem,
+                pressed && styles.menuItemPressed,
+              ]}
+              onPress={() => {
+                setShowMenu(false);
+                Alert.alert(
+                  "Coming soon",
+                  "Sell on Depop is not yet available.",
+                );
+              }}
+            >
+              <Ionicons name="pricetag-outline" size={22} color="#888" />
+              <ThemedText style={[styles.menuItemText, { color: "#888" }]}>
+                Sell on Depop
+              </ThemedText>
+              <ThemedText style={styles.menuItemBadge}>Soon</ThemedText>
+            </Pressable>
+
+            <View style={styles.menuDivider} />
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.menuItem,
+                pressed && styles.menuItemPressed,
+              ]}
+              onPress={() => {
+                setShowMenu(false);
+                setConfirmingDelete(true);
+              }}
+            >
+              <Ionicons name="trash-outline" size={22} color="#C00" />
+              <ThemedText style={[styles.menuItemText, { color: "#C00" }]}>
+                Delete
+              </ThemedText>
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.menuCancel,
+                pressed && { opacity: 0.7 },
+              ]}
+              onPress={() => setShowMenu(false)}
+            >
+              <ThemedText style={styles.menuCancelText}>Cancel</ThemedText>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
       <ScrollView
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.scrollContent}
@@ -228,7 +329,11 @@ export default function EditClosetItemScreen() {
               />
             ) : (
               <View style={styles.previewPlaceholder}>
-                <Ionicons name="image-outline" size={40} color={placeholderColor} />
+                <Ionicons
+                  name="image-outline"
+                  size={40}
+                  color={placeholderColor}
+                />
                 <ThemedText style={[styles.previewHint, { opacity: 0.65 }]}>
                   Use Camera or Library below (optional)
                 </ThemedText>
@@ -288,14 +393,14 @@ export default function EditClosetItemScreen() {
             </ThemedText>
           ) : null}
 
-          <ThemedText type="defaultSemiBold" style={styles.label}>Brand</ThemedText>
-          <BrandInput
-            value={brand}
-            onChange={setBrand}
-            editable={!busy}
-          />
+          <ThemedText type="defaultSemiBold" style={styles.label}>
+            Brand
+          </ThemedText>
+          <BrandInput value={brand} onChange={setBrand} editable={!busy} />
 
-          <ThemedText type="defaultSemiBold" style={styles.label}>Name</ThemedText>
+          <ThemedText type="defaultSemiBold" style={styles.label}>
+            Name
+          </ThemedText>
           <TextInput
             accessibilityLabel="Item name"
             placeholder="e.g. Navy chinos"
@@ -306,7 +411,9 @@ export default function EditClosetItemScreen() {
             editable={!busy}
           />
 
-          <ThemedText type="defaultSemiBold" style={styles.label}>Cost ($)</ThemedText>
+          <ThemedText type="defaultSemiBold" style={styles.label}>
+            Cost ($)
+          </ThemedText>
           <TextInput
             accessibilityLabel="Item cost in dollars"
             placeholder="0"
@@ -318,7 +425,9 @@ export default function EditClosetItemScreen() {
             editable={!busy}
           />
 
-          <ThemedText type="defaultSemiBold" style={styles.label}>Wears</ThemedText>
+          <ThemedText type="defaultSemiBold" style={styles.label}>
+            Wears
+          </ThemedText>
           <TextInput
             accessibilityLabel="Number of times worn"
             placeholder="0"
@@ -332,7 +441,12 @@ export default function EditClosetItemScreen() {
         </ThemedView>
       </ScrollView>
 
-      <ThemedView style={[styles.footer, { paddingBottom: insets.bottom + 12, borderColor }]}>
+      <ThemedView
+        style={[
+          styles.footer,
+          { paddingBottom: insets.bottom + 12, borderColor },
+        ]}
+      >
         <Pressable
           onPress={onSave}
           disabled={busy}
@@ -347,7 +461,11 @@ export default function EditClosetItemScreen() {
           {saving ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <ThemedText style={styles.saveBtnText} lightColor="#fff" darkColor="#fff">
+            <ThemedText
+              style={styles.saveBtnText}
+              lightColor="#fff"
+              darkColor="#fff"
+            >
               Save changes
             </ThemedText>
           )}
@@ -362,19 +480,28 @@ export default function EditClosetItemScreen() {
               <Pressable
                 onPress={() => setConfirmingDelete(false)}
                 disabled={deleting}
-                style={({ pressed }) => [styles.confirmCancel, { borderColor }, pressed && styles.photoBtnPressed]}
+                style={({ pressed }) => [
+                  styles.confirmCancel,
+                  { borderColor },
+                  pressed && styles.photoBtnPressed,
+                ]}
               >
                 <ThemedText style={styles.confirmCancelText}>Cancel</ThemedText>
               </Pressable>
               <Pressable
                 onPress={confirmDelete}
                 disabled={deleting}
-                style={({ pressed }) => [styles.confirmDeleteBtn, pressed && styles.deleteBtnPressed]}
+                style={({ pressed }) => [
+                  styles.confirmDeleteBtn,
+                  pressed && styles.deleteBtnPressed,
+                ]}
               >
                 {deleting ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <ThemedText style={styles.confirmDeleteText}>Delete</ThemedText>
+                  <ThemedText style={styles.confirmDeleteText}>
+                    Delete
+                  </ThemedText>
                 )}
               </Pressable>
             </View>
@@ -491,5 +618,62 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "600",
     color: "#fff",
+  },
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "flex-end",
+  },
+  menuSheet: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingHorizontal: 16,
+    paddingBottom: 36,
+    paddingTop: 12,
+  },
+  menuHandle: {
+    alignSelf: "center",
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#ccc",
+    marginBottom: 12,
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    paddingVertical: 16,
+    paddingHorizontal: 4,
+  },
+  menuItemPressed: { opacity: 0.6 },
+  menuItemText: { flex: 1, fontSize: 16 },
+  menuItemBadge: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#aaa",
+    backgroundColor: "#f0f0f0",
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+    overflow: "hidden",
+  },
+  menuDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#e5e5e5",
+    marginHorizontal: 4,
+  },
+  menuCancel: {
+    marginTop: 10,
+    height: 50,
+    borderRadius: 12,
+    backgroundColor: "#f2f2f7",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  menuCancelText: {
+    fontSize: 16,
+    fontWeight: "600",
   },
 });

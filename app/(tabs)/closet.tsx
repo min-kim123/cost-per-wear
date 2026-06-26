@@ -7,7 +7,6 @@ import type { ImageSourcePropType } from "react-native";
 import {
   ActivityIndicator,
   FlatList,
-  PanResponder,
   Platform,
   Pressable,
   RefreshControl,
@@ -144,7 +143,8 @@ export default function ClosetScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      loadItems();
+      loadItems({ silent: true });
+
       checkGmailAccess();
     }, [loadItems, checkGmailAccess]),
   );
@@ -211,23 +211,6 @@ export default function ClosetScreen() {
     }
   }
 
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_event, gestureState) => {
-          const { dx, dy } = gestureState;
-          return Math.abs(dx) > 20 && Math.abs(dx) > Math.abs(dy);
-        },
-        onPanResponderRelease: (_event, gestureState) => {
-          const { dx, vx } = gestureState;
-          if (dx > 50 && Math.abs(vx) > 0.2) {
-            router.replace("/");
-          }
-        },
-      }),
-    [router],
-  );
-
   const { width: windowWidth } = useWindowDimensions();
   // 12px padding on each side + 4px margin on each side per card × 3 columns
   const cardWidth = (windowWidth - 24 - 24) / 3;
@@ -235,7 +218,7 @@ export default function ClosetScreen() {
   const listBottomPad = Math.max(32, insets.bottom + 80);
 
   return (
-    <ThemedView style={styles.container} {...panResponder.panHandlers}>
+    <ThemedView style={styles.container}>
       <View style={styles.content}>
         {loading ? (
           <ActivityIndicator style={styles.loading} size="large" />
@@ -246,7 +229,10 @@ export default function ClosetScreen() {
             numColumns={3}
             keyboardShouldPersistTaps="handled"
             refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+              />
             }
             contentContainerStyle={[
               styles.listContent,
@@ -273,7 +259,9 @@ export default function ClosetScreen() {
                   ]}
                 />
                 {loadError ? (
-                  <ThemedText style={styles.errorBanner}>{loadError}</ThemedText>
+                  <ThemedText style={styles.errorBanner}>
+                    {loadError}
+                  </ThemedText>
                 ) : null}
               </View>
             }
@@ -320,21 +308,33 @@ export default function ClosetScreen() {
                     styles.cardPressable,
                     { width: cardWidth },
                     pressed && styles.cardPressed,
-                    isSelected && styles.cardSelected,
                   ]}
                   accessibilityRole="button"
-                  accessibilityLabel={selectMode ? `Select ${item.name}` : `Edit ${item.name}`}
+                  accessibilityLabel={
+                    selectMode ? `Select ${item.name}` : `Edit ${item.name}`
+                  }
                 >
                   <ThemedView style={styles.card}>
                     <Image
                       source={item.image}
                       style={styles.image}
                       contentFit="cover"
+                      cachePolicy="memory-disk"
                     />
                     {isSelected && (
-                      <View style={styles.selectedOverlay}>
-                        <Ionicons name="checkmark-circle" size={28} color="#fff" />
-                      </View>
+                      <>
+                        <View
+                          style={styles.selectedBorder}
+                          pointerEvents="none"
+                        />
+                        <View style={styles.selectedOverlay}>
+                          <Ionicons
+                            name="checkmark-circle"
+                            size={28}
+                            color="#fff"
+                          />
+                        </View>
+                      </>
                     )}
                     <ThemedView style={styles.cardContent}>
                       <ThemedText numberOfLines={1} style={styles.itemBrand}>
@@ -364,7 +364,9 @@ export default function ClosetScreen() {
                       </View>
                       <ThemedText>
                         {formatCurrency(costPerWear)}
-                        <ThemedText style={styles.wearSuffix}>{"/wear "}</ThemedText>
+                        <ThemedText style={styles.wearSuffix}>
+                          {"/wear "}
+                        </ThemedText>
                         {`(${item.wears})`}
                       </ThemedText>
                     </ThemedView>
@@ -378,7 +380,11 @@ export default function ClosetScreen() {
           <>
             <Pressable
               onPress={cancelSelectMode}
-              style={[styles.fab, styles.fabCancel, { bottom: insets.bottom + 88, right: 16 }]}
+              style={[
+                styles.fab,
+                styles.fabCancel,
+                { bottom: insets.bottom + 88, right: 16 },
+              ]}
               accessibilityRole="button"
               accessibilityLabel="Cancel"
             >
@@ -399,11 +405,9 @@ export default function ClosetScreen() {
               accessibilityLabel="Confirm wear count"
             >
               {incrementing ? (
-                <ActivityIndicator color="#0a7ea4" />
+                <ActivityIndicator color="#ffb361" />
               ) : (
-                <ThemedText style={styles.fabRectLabel}>
-                  +1 wear count
-                </ThemedText>
+                <ThemedText style={styles.fabRectLabel}>done</ThemedText>
               )}
             </Pressable>
           </>
@@ -417,7 +421,7 @@ export default function ClosetScreen() {
                   styles.fab,
                   styles.fabRect,
                   styles.fabRectOutline,
-                  { bottom: insets.bottom + 160, right: 16 },
+                  { bottom: insets.bottom + 232, right: 16 },
                   pressed && styles.fabPressed,
                   syncing && styles.fabDisabled,
                 ]}
@@ -425,21 +429,48 @@ export default function ClosetScreen() {
                 accessibilityLabel="Sync Gmail"
               >
                 {syncing ? (
-                  <ActivityIndicator color="#0a7ea4" />
+                  <ActivityIndicator color="#ffb361" />
                 ) : (
-                  <ThemedText style={styles.fabRectLabel}>sync gmail</ThemedText>
+                  <ThemedText style={styles.fabRectLabel}>
+                    sync gmail
+                  </ThemedText>
                 )}
               </Pressable>
             )}
             <Pressable
-              onPress={() => { setFabOpen(false); router.push("/add-closet-item"); }}
-              style={[styles.fab, styles.fabRect, styles.fabRectOutline, { bottom: insets.bottom + 88, right: 16 }]}
+              onPress={() => {
+                setFabOpen(false);
+                router.push("/log-outfit");
+              }}
+              style={({ pressed }) => [
+                styles.fab,
+                styles.fabRect,
+                styles.fabRectOutline,
+                { bottom: insets.bottom + 160, right: 16 },
+                pressed && styles.fabPressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Log today's outfit"
+            >
+              <ThemedText style={styles.fabRectLabel}>
+                today's outfit
+              </ThemedText>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                setFabOpen(false);
+                router.push("/add-closet-item");
+              }}
+              style={[
+                styles.fab,
+                styles.fabRect,
+                styles.fabRectOutline,
+                { bottom: insets.bottom + 88, right: 16 },
+              ]}
               accessibilityRole="button"
               accessibilityLabel="Add new item"
             >
-              <ThemedText style={styles.fabRectLabel}>
-                add new item
-              </ThemedText>
+              <ThemedText style={styles.fabRectLabel}>add new item</ThemedText>
             </Pressable>
             <Pressable
               onPress={enterSelectMode}
@@ -453,9 +484,7 @@ export default function ClosetScreen() {
               accessibilityRole="button"
               accessibilityLabel="Count wears"
             >
-              <ThemedText style={styles.fabRectLabel}>
-                +1 wear count
-              </ThemedText>
+              <ThemedText style={styles.fabRectLabel}>+ wear count</ThemedText>
             </Pressable>
             <Pressable
               onPress={() => setFabOpen(false)}
@@ -516,10 +545,10 @@ const styles = StyleSheet.create({
   },
   fab: {
     position: "absolute",
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: "#0a7ea4",
+    width: 60,
+    height: 60,
+    borderRadius: 15,
+    backgroundColor: "#ffb361",
     alignItems: "center",
     justifyContent: "center",
     zIndex: 1,
@@ -553,12 +582,12 @@ const styles = StyleSheet.create({
   fabRectOutline: {
     backgroundColor: "#fff",
     borderWidth: 1.5,
-    borderColor: "#0a7ea4",
+    borderColor: "#ffb361",
   },
   fabRectLabel: {
     fontSize: 15,
     fontWeight: "600",
-    color: "#0a7ea4",
+    color: "#ffb361",
   },
   fabScrim: {
     ...StyleSheet.absoluteFillObject,
@@ -575,13 +604,13 @@ const styles = StyleSheet.create({
   },
   gmailPrompt: {
     borderWidth: 1.5,
-    borderColor: "#0a7ea4",
+    borderColor: "#ffb361",
     borderRadius: 22,
     paddingVertical: 10,
     paddingHorizontal: 20,
   },
   gmailPromptText: {
-    color: "#0a7ea4",
+    color: "#ffb361",
     fontSize: 15,
     fontWeight: "600",
   },
@@ -591,11 +620,13 @@ const styles = StyleSheet.create({
   cardPressed: {
     opacity: 0.75,
   },
-  cardSelected: {
-    opacity: 1,
-    borderWidth: 2,
-    borderColor: "#0a7ea4",
-    borderRadius: 14,
+  cardSelected: {},
+  selectedBorder: {
+    ...StyleSheet.absoluteFillObject,
+    borderWidth: 2.5,
+    borderColor: "#ffb361",
+    borderRadius: 12,
+    zIndex: 3,
   },
   selectedOverlay: {
     position: "absolute",
