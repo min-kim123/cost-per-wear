@@ -343,7 +343,7 @@ export default function ClosetScreen() {
                           .join(" | ")}
                       </ThemedText>
                       <View style={styles.nameWrap}>
-                        <ThemedText
+                        {/* <ThemedText
                           numberOfLines={1}
                           ellipsizeMode="clip"
                           style={[
@@ -353,7 +353,7 @@ export default function ClosetScreen() {
                           ]}
                         >
                           {item.name}
-                        </ThemedText>
+                        </ThemedText> */}
                         <LinearGradient
                           colors={[`${cardBackground}00`, cardBackground]}
                           start={{ x: 0, y: 0 }}
@@ -362,13 +362,14 @@ export default function ClosetScreen() {
                           pointerEvents="none"
                         />
                       </View>
-                      <ThemedText>
-                        {formatCurrency(costPerWear)}
-                        <ThemedText style={styles.wearSuffix}>
-                          {"/wear "}
+                      <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+                        <ThemedText>
+                          {formatCurrency(costPerWear)}
                         </ThemedText>
-                        {`(${item.wears})`}
-                      </ThemedText>
+                        <ThemedText style={{ opacity: 0.45 }}>
+                          {` ($${item.cost}`+'/'+`${item.wears})`}
+                        </ThemedText>
+                      </View>
                     </ThemedView>
                   </ThemedView>
                 </Pressable>
@@ -405,7 +406,7 @@ export default function ClosetScreen() {
               accessibilityLabel="Confirm wear count"
             >
               {incrementing ? (
-                <ActivityIndicator color="#ffb361" />
+                <ActivityIndicator color="#000" />
               ) : (
                 <ThemedText style={styles.fabRectLabel}>done</ThemedText>
               )}
@@ -429,7 +430,7 @@ export default function ClosetScreen() {
                 accessibilityLabel="Sync Gmail"
               >
                 {syncing ? (
-                  <ActivityIndicator color="#ffb361" />
+                  <ActivityIndicator color="#000" />
                 ) : (
                   <ThemedText style={styles.fabRectLabel}>
                     sync gmail
@@ -468,9 +469,9 @@ export default function ClosetScreen() {
                 { bottom: insets.bottom + 88, right: 16 },
               ]}
               accessibilityRole="button"
-              accessibilityLabel="Add new item"
+              accessibilityLabel="add items"
             >
-              <ThemedText style={styles.fabRectLabel}>add new item</ThemedText>
+              <ThemedText style={styles.fabRectLabel}>add item</ThemedText>
             </Pressable>
             <Pressable
               onPress={enterSelectMode}
@@ -547,16 +548,11 @@ const styles = StyleSheet.create({
     position: "absolute",
     width: 60,
     height: 60,
-    borderRadius: 15,
-    backgroundColor: "#ffb361",
+    borderRadius: 25,
+    backgroundColor: "rgba(0,0,0,0.2)",
     alignItems: "center",
     justifyContent: "center",
     zIndex: 1,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.28,
-    shadowRadius: 4,
-    elevation: 6,
   },
   fabPressed: {
     opacity: 0.88,
@@ -582,12 +578,12 @@ const styles = StyleSheet.create({
   fabRectOutline: {
     backgroundColor: "#fff",
     borderWidth: 1.5,
-    borderColor: "#ffb361",
+    borderColor: "#000",
   },
   fabRectLabel: {
     fontSize: 15,
     fontWeight: "600",
-    color: "#ffb361",
+    color: "#000",
   },
   fabScrim: {
     ...StyleSheet.absoluteFillObject,
@@ -604,13 +600,13 @@ const styles = StyleSheet.create({
   },
   gmailPrompt: {
     borderWidth: 1.5,
-    borderColor: "#ffb361",
+    borderColor: "#000",
     borderRadius: 22,
     paddingVertical: 10,
     paddingHorizontal: 20,
   },
   gmailPromptText: {
-    color: "#ffb361",
+    color: "#000",
     fontSize: 15,
     fontWeight: "600",
   },
@@ -624,7 +620,7 @@ const styles = StyleSheet.create({
   selectedBorder: {
     ...StyleSheet.absoluteFillObject,
     borderWidth: 2.5,
-    borderColor: "#ffb361",
+    borderColor: "#000",
     borderRadius: 12,
     zIndex: 3,
   },

@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
-import { useRouter } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { Stack, useFocusEffect, useRouter } from "expo-router";
+import { useCallback, useRef, useState } from "react";
 import type { ImageSourcePropType } from "react-native";
 import {
   ActivityIndicator,
@@ -55,26 +55,42 @@ export default function SelectOutfitItemsScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hasDraft, setHasDraft] = useState(false);
+  const prevItemIdsRef = useRef<Set<string> | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [list, draft] = await Promise.all([loadClosetItems(), draftPhotoExists()]);
-      setItems(list);
-      setHasDraft(draft);
-      if (!draft) {
-        Alert.alert("No photo", "Take an outfit photo on Home first.", [
-          { text: "OK", onPress: () => router.back() },
-        ]);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [router]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      setLoading(true);
+      Promise.all([loadClosetItems(), draftPhotoExists()])
+        .then(([list, draft]) => {
+          if (!active) return;
+          const currentIds = new Set(list.map((i) => i.id));
+          // Only auto-select on return from another screen, not on first load
+          if (prevItemIdsRef.current !== null) {
+            const newIds = list
+              .map((i) => i.id)
+              .filter((id) => !prevItemIdsRef.current!.has(id));
+            if (newIds.length > 0) {
+              setSelected((prev) => {
+                const next = new Set(prev);
+                newIds.forEach((id) => next.add(id));
+                return next;
+              });
+            }
+          }
+          prevItemIdsRef.current = currentIds;
+          setItems(list);
+          setHasDraft(draft);
+          if (!draft) {
+            Alert.alert("No photo", "Take an outfit photo on Home first.", [
+              { text: "OK", onPress: () => router.back() },
+            ]);
+          }
+        })
+        .finally(() => { if (active) setLoading(false); });
+      return () => { active = false; };
+    }, [router]),
+  );
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -109,9 +125,20 @@ export default function SelectOutfitItemsScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      <ThemedText type="subtitle" style={styles.title}>
-        What did you wear?
-      </ThemedText>
+      <Stack.Screen
+        options={{
+          title: "What did you wear?",
+          headerRight: () => (
+            <Pressable
+              onPress={() => router.push("/add-closet-item")}
+              hitSlop={8}
+              accessibilityLabel="Add new item"
+            >
+              <Ionicons name="add" size={26} color="#000" />
+            </Pressable>
+          ),
+        }}
+      />
       <ThemedText style={styles.hint}>Tap items to include in today&apos;s outfit.</ThemedText>
       <FlatList
         data={items}
@@ -142,6 +169,15 @@ export default function SelectOutfitItemsScreen() {
             </Pressable>
           );
         }}
+        ListEmptyComponent={
+          <Pressable
+            onPress={() => router.push("/add-closet-item")}
+            style={styles.emptyAdd}
+          >
+            <Ionicons name="add-circle-outline" size={32} color="rgba(128,128,128,0.6)" />
+            <Text style={styles.emptyAddText}>Add your first closet item</Text>
+          </Pressable>
+        }
       />
       <View style={styles.footer}>
         <Pressable
@@ -169,10 +205,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-  },
-  title: {
-    paddingHorizontal: 16,
-    marginBottom: 4,
   },
   hint: {
     paddingHorizontal: 16,
@@ -233,5 +265,15 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     fontWeight: "600",
+  },
+  emptyAdd: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 48,
+    gap: 12,
+  },
+  emptyAddText: {
+    fontSize: 15,
+    color: "rgba(128,128,128,0.8)",
   },
 });

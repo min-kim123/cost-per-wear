@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
-import { Stack, useRouter } from "expo-router";
+import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -42,6 +42,7 @@ async function loadItems(): Promise<ClosetItem[]> {
 
 export default function LogOutfitScreen() {
   const router = useRouter();
+  const { date } = useLocalSearchParams<{ date?: string }>();
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
 
@@ -83,7 +84,8 @@ export default function LogOutfitScreen() {
     }
     setSaving(true);
     try {
-      await saveOutfitItemsOnly(Array.from(selectedIds));
+      const targetDate = typeof date === "string" && date ? date : undefined;
+      await saveOutfitItemsOnly(Array.from(selectedIds), targetDate);
       router.back();
     } catch (e) {
       Alert.alert("Error", e instanceof Error ? e.message : "Could not save outfit");
@@ -92,35 +94,13 @@ export default function LogOutfitScreen() {
     }
   }
 
-  const dateKey = getTodayDateKey();
+  const dateKey = typeof date === "string" && date ? date : getTodayDateKey();
 
   return (
     <ThemedView style={styles.container}>
       <Stack.Screen
         options={{
-          title: "Today's Outfit",
-          headerRight: () => (
-            <Pressable
-              onPress={save}
-              disabled={saving || selectedIds.size === 0}
-              style={({ pressed }) => [pressed && { opacity: 0.6 }]}
-              accessibilityRole="button"
-              accessibilityLabel="Save outfit"
-            >
-              {saving ? (
-                <ActivityIndicator color="#ffb361" />
-              ) : (
-                <ThemedText
-                  style={[
-                    styles.saveLabel,
-                    selectedIds.size === 0 && styles.saveLabelDisabled,
-                  ]}
-                >
-                  Save
-                </ThemedText>
-              )}
-            </Pressable>
-          ),
+          title: typeof date === "string" && date ? `Outfit for ${date}` : "Today's Outfit",
         }}
       />
 
@@ -261,7 +241,7 @@ const styles = StyleSheet.create({
   selectedBorder: {
     ...StyleSheet.absoluteFillObject,
     borderWidth: 2.5,
-    borderColor: "#ffb361",
+    borderColor: "#000",
     borderRadius: 12,
     zIndex: 3,
   },
@@ -305,7 +285,7 @@ const styles = StyleSheet.create({
   saveLabel: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#ffb361",
+    color: "#000",
   },
   saveLabelDisabled: {
     opacity: 0.35,
@@ -319,7 +299,7 @@ const styles = StyleSheet.create({
   saveBtn: {
     height: 50,
     borderRadius: 12,
-    backgroundColor: "#ffb361",
+    backgroundColor: "#000",
     alignItems: "center",
     justifyContent: "center",
   },

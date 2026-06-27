@@ -22,6 +22,8 @@ export default function HomeScreen() {
   const [cameraReady, setCameraReady] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [previewUri, setPreviewUri] = useState<string | null>(null);
+  const [facing, setFacing] = useState<"back" | "front">("back");
+  const lastTapRef = useRef<number>(0);
 
   useEffect(() => {
     return subscribeHomeCameraReset(() => {
@@ -53,6 +55,16 @@ export default function HomeScreen() {
 
   const handleRetake = useCallback(() => {
     setPreviewUri(null);
+    setCameraReady(false);
+  }, []);
+
+  const handleDoubleTap = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTapRef.current < 300) {
+      setCameraReady(false);
+      setFacing((f) => (f === "back" ? "front" : "back"));
+    }
+    lastTapRef.current = now;
   }, []);
 
   const handleConfirm = useCallback(() => {
@@ -82,7 +94,7 @@ export default function HomeScreen() {
     <View style={styles.container}>
       {previewUri ? (
         <>
-          <Image source={{ uri: previewUri }} style={StyleSheet.absoluteFill} contentFit="cover" />
+          <Image source={{ uri: previewUri }} style={StyleSheet.absoluteFill} contentFit="cover" cachePolicy="none" />
           <View style={styles.previewActions}>
             <TouchableOpacity
               style={styles.roundAction}
@@ -102,14 +114,29 @@ export default function HomeScreen() {
         </>
       ) : (
         <>
-          <CameraView
-            ref={cameraRef}
+          <TouchableOpacity
+            activeOpacity={1}
             style={StyleSheet.absoluteFill}
-            facing="back"
-            mode="picture"
-            onCameraReady={() => setCameraReady(true)}
-          />
+            onPress={handleDoubleTap}
+            accessibilityLabel="Double-tap to flip camera"
+          >
+            <CameraView
+              key={facing}
+              ref={cameraRef}
+              style={StyleSheet.absoluteFill}
+              facing={facing}
+              mode="picture"
+              onCameraReady={() => setCameraReady(true)}
+            />
+          </TouchableOpacity>
           <View style={styles.captureBar}>
+            <TouchableOpacity
+              style={styles.flipButton}
+              onPress={() => { setCameraReady(false); setFacing((f) => (f === "back" ? "front" : "back")); }}
+              accessibilityLabel="Flip camera"
+            >
+              <Ionicons name="camera-reverse-outline" size={28} color="#fff" />
+            </TouchableOpacity>
             <TouchableOpacity
               style={[styles.captureButton, (!cameraReady || capturing) && styles.captureDisabled]}
               onPress={handleCapture}
@@ -162,6 +189,16 @@ const styles = StyleSheet.create({
     bottom: 40,
     left: 0,
     right: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 32,
+  },
+  flipButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "rgba(0,0,0,0.4)",
     alignItems: "center",
     justifyContent: "center",
   },

@@ -39,29 +39,35 @@ type BulkItem = {
   wearsText: string;
 };
 
+// ── Phase types ──────────────────────────────────────────────────────────────
+// "pick"      → initial screen: camera / library / paste buttons
+// "capturing" → camera multi-shot phase
+// "editing"   → fill in details for each photo
+
 export default function AddClosetItemScreen() {
   const router = useRouter();
 
-  // ── Single-item state ──────────────────────────────────────────────
-  const [brand, setBrand] = useState("");
-  const [name, setName] = useState("");
-  const [costText, setCostText] = useState("");
-  const [wearsText, setWearsText] = useState("");
-  const [pickedUri, setPickedUri] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [picking, setPicking] = useState(false);
-
-  // ── Bulk-import state ──────────────────────────────────────────────
-  const [bulkItems, setBulkItems] = useState<BulkItem[] | null>(null);
+  const [phase, setPhase] = useState<"pick" | "capturing" | "editing">("pick");
+  const [bulkItems, setBulkItems] = useState<BulkItem[]>([]);
   const [bulkIndex, setBulkIndex] = useState(0);
-  const [bulkCapturing, setBulkCapturing] = useState(false);
   const [pendingUris, setPendingUris] = useState<string[]>([]);
+  const [picking, setPicking] = useState(false);
+  const [saving, setSaving] = useState(false);
 
-  const nameRef = useRef<TextInput>(null);
   const costRef = useRef<TextInput>(null);
   const wearsRef = useRef<TextInput>(null);
 
-  // ── Web paste ─────────────────────────────────────────────────────
+  const textColor = useThemeColor({}, "text");
+  const placeholderColor = useThemeColor({ light: "#8E8E93" }, "icon");
+  const borderColor = useThemeColor({ light: "#C6C6C8" }, "icon");
+  const inputBackground = useThemeColor({ light: "#EFEFF4" }, "background");
+
+  const inputCompact = [
+    styles.inputCompact,
+    { color: textColor, borderColor, backgroundColor: inputBackground },
+  ];
+
+  // ── Web Ctrl+V paste ──────────────────────────────────────────────────────
   useEffect(() => {
     if (Platform.OS !== "web") return;
     const handlePaste = (e: ClipboardEvent) => {
@@ -75,7 +81,7 @@ export default function AddClosetItemScreen() {
           const reader = new FileReader();
           reader.onload = (ev) => {
             const dataUri = ev.target?.result as string;
-            if (dataUri) setPickedUri(dataUri);
+            if (dataUri) startEditingWithUris([dataUri]);
           };
           reader.readAsDataURL(file);
           break;
@@ -86,101 +92,16 @@ export default function AddClosetItemScreen() {
     return () => document.removeEventListener("paste", handlePaste);
   }, []);
 
-  const textColor = useThemeColor({}, "text");
-  const placeholderColor = useThemeColor({ light: "#8E8E93" }, "icon");
-  const borderColor = useThemeColor({ light: "#C6C6C8" }, "icon");
-  const inputBackground = useThemeColor({ light: "#EFEFF4" }, "background");
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  function startEditingWithUris(uris: string[]) {
+    setBulkItems(uris.map((uri) => ({ uri, brand: "", name: "", costText: "", wearsText: "" })));
+    setBulkIndex(0);
+    setPhase("editing");
+  }
 
-  const inputStyle = [
-    styles.input,
-    { color: textColor, borderColor, backgroundColor: inputBackground },
-  ];
-  const inputStyleCompact = [
-    styles.inputCompact,
-    { color: textColor, borderColor, backgroundColor: inputBackground },
-  ];
-
-  // ── Single-item picker ────────────────────────────────────────────
-  const runPicker = async (mode: "camera" | "library") => {
-    if (picking || saving) return;
-    setPicking(true);
-    try {
-      if (mode === "camera") {
-        const { status } = await ImagePicker.requestCameraPermissionsAsync();
-        if (status !== "granted") {
-          Alert.alert("Camera access", "Allow camera access in Settings to take a photo.");
-          return;
-        }
-        const result = await ImagePicker.launchCameraAsync(PICKER_OPTIONS);
-        if (!result.canceled && result.assets[0]?.uri) setPickedUri(result.assets[0].uri);
-      } else {
-        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        if (status !== "granted") {
-          Alert.alert("Photo library", "Allow photo library access in Settings to choose a picture.");
-          return;
-        }
-        const result = await ImagePicker.launchImageLibraryAsync(PICKER_OPTIONS);
-        if (!result.canceled && result.assets[0]?.uri) setPickedUri(result.assets[0].uri);
-      }
-    } catch (e) {
-      Alert.alert("Photo", e instanceof Error ? e.message : "Could not open camera or photo library.");
-    } finally {
-      setPicking(false);
-    }
-  };
-
-  const pasteFromClipboard = async () => {
-    if (picking || saving) return;
-    setPicking(true);
-    try {
-      const hasImage = await Clipboard.hasImageAsync();
-      if (!hasImage) { Alert.alert("No image", "There is no image in your clipboard."); return; }
-      const result = await Clipboard.getImageAsync({ format: "png" });
-      if (!result?.data) { Alert.alert("Paste failed", "Could not read image from clipboard."); return; }
-      if (Platform.OS === "web") {
-        const dataUri = result.data.startsWith("data:") ? result.data : `data:image/png;base64,${result.data}`;
-        setPickedUri(dataUri);
-      } else {
-        const uri = `${FileSystem.cacheDirectory}clipboard-${Date.now()}.png`;
-        await FileSystem.writeAsStringAsync(uri, result.data, { encoding: FileSystem.EncodingType.Base64 });
-        setPickedUri(uri);
-      }
-    } catch (e) {
-      Alert.alert("Paste failed", e instanceof Error ? e.message : "Could not read image from clipboard.");
-    } finally {
-      setPicking(false);
-    }
-  };
-
-  // ── Single-item save ──────────────────────────────────────────────
-  const onSave = async () => {
-    const trimmed = name.trim();
-    if (!trimmed) { Alert.alert("Name required", "Enter a name for this item."); return; }
-    const parsed = parseFloat(costText.replace(/,/g, ""));
-    const cost = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-    const parsedWears = parseInt(wearsText, 10);
-    const wears = Number.isFinite(parsedWears) && parsedWears >= 0 ? parsedWears : 0;
-    setSaving(true);
-    try {
-      const supabase = getSupabase();
-      const { data: { user } } = await supabase.auth.getUser();
-      let image: string | null = null;
-      if (pickedUri) image = await uploadClosetItemImage(pickedUri, user?.id);
-      const { error } = await supabase.from("closet").insert({
-        name: trimmed, brand: brand.trim(), cost: Number(cost), wears, image, user_id: user?.id,
-      });
-      if (error) throw new Error(error.message);
-      router.back();
-    } catch (e) {
-      Alert.alert("Could not save", e instanceof Error ? e.message : "Unknown error");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // ── Bulk: start from library (multiple select) ────────────────────
-  const startBulkLibrary = async () => {
-    if (picking || saving) return;
+  // ── Photo pickers ─────────────────────────────────────────────────────────
+  const pickFromLibrary = async () => {
+    if (picking) return;
     setPicking(true);
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -194,8 +115,7 @@ export default function AddClosetItemScreen() {
         quality: 0.85,
       });
       if (!result.canceled && result.assets.length > 0) {
-        setBulkItems(result.assets.map((a) => ({ uri: a.uri, brand: "", name: "", costText: "", wearsText: "" })));
-        setBulkIndex(0);
+        startEditingWithUris(result.assets.map((a) => a.uri));
       }
     } catch (e) {
       Alert.alert("Error", e instanceof Error ? e.message : "Could not open library.");
@@ -204,9 +124,8 @@ export default function AddClosetItemScreen() {
     }
   };
 
-  // ── Bulk: start from camera ───────────────────────────────────────
-  const startBulkCamera = async () => {
-    if (picking || saving) return;
+  const startCamera = async () => {
+    if (picking) return;
     setPicking(true);
     try {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
@@ -217,7 +136,7 @@ export default function AddClosetItemScreen() {
       const result = await ImagePicker.launchCameraAsync(PICKER_OPTIONS);
       if (!result.canceled && result.assets[0]?.uri) {
         setPendingUris([result.assets[0].uri]);
-        setBulkCapturing(true);
+        setPhase("capturing");
       }
     } catch (e) {
       Alert.alert("Error", e instanceof Error ? e.message : "Could not open camera.");
@@ -241,40 +160,57 @@ export default function AddClosetItemScreen() {
     }
   };
 
-  const startBulkEditing = () => {
-    if (pendingUris.length === 0) return;
-    setBulkItems(pendingUris.map((uri) => ({ uri, brand: "", name: "", costText: "", wearsText: "" })));
-    setBulkIndex(0);
-    setBulkCapturing(false);
-    setPendingUris([]);
+  const pasteFromClipboard = async () => {
+    if (picking) return;
+    setPicking(true);
+    try {
+      const hasImage = await Clipboard.hasImageAsync();
+      if (!hasImage) {
+        Alert.alert("No image", "There is no image in your clipboard.");
+        return;
+      }
+      const result = await Clipboard.getImageAsync({ format: "png" });
+      if (!result?.data) {
+        Alert.alert("Paste failed", "Could not read image from clipboard.");
+        return;
+      }
+      let uri: string;
+      if (Platform.OS === "web") {
+        uri = result.data.startsWith("data:") ? result.data : `data:image/png;base64,${result.data}`;
+      } else {
+        uri = `${FileSystem.cacheDirectory}clipboard-${Date.now()}.png`;
+        await FileSystem.writeAsStringAsync(uri, result.data, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+      }
+      startEditingWithUris([uri]);
+    } catch (e) {
+      Alert.alert("Paste failed", e instanceof Error ? e.message : "Could not read image from clipboard.");
+    } finally {
+      setPicking(false);
+    }
   };
 
-  const cancelBulk = () => {
-    setBulkItems(null);
-    setBulkIndex(0);
-    setBulkCapturing(false);
-    setPendingUris([]);
+  // ── Bulk field update ─────────────────────────────────────────────────────
+  const updateField = (field: keyof Omit<BulkItem, "uri">, value: string) => {
+    setBulkItems((prev) => {
+      const next = [...prev];
+      next[bulkIndex] = { ...next[bulkIndex], [field]: value };
+      return next;
+    });
   };
 
-  const updateBulkField = (field: keyof Omit<BulkItem, "uri">, value: string) => {
-    if (!bulkItems) return;
-    const updated = [...bulkItems];
-    updated[bulkIndex] = { ...updated[bulkIndex], [field]: value };
-    setBulkItems(updated);
-  };
-
-  // ── Bulk: next / save all ─────────────────────────────────────────
-  const onBulkNext = async () => {
-    if (!bulkItems) return;
+  // ── Save ──────────────────────────────────────────────────────────────────
+  const onNext = async () => {
     const current = bulkItems[bulkIndex];
-    if (!current.name.trim()) { Alert.alert("Name required", "Enter a name for this item."); return; }
-
+    if (!current.name.trim()) {
+      Alert.alert("Name required", "Enter a name for this item.");
+      return;
+    }
     if (bulkIndex < bulkItems.length - 1) {
       setBulkIndex((i) => i + 1);
       return;
     }
-
-    // Save all
     setSaving(true);
     try {
       const supabase = getSupabase();
@@ -287,11 +223,14 @@ export default function AddClosetItemScreen() {
         const wears = Number.isFinite(parsedWears) && parsedWears >= 0 ? parsedWears : 0;
         const image = item.uri ? await uploadClosetItemImage(item.uri, user?.id) : null;
         await supabase.from("closet").insert({
-          name: item.name.trim(), brand: item.brand.trim(),
-          cost: Number(cost), wears, image, user_id: user?.id,
+          name: item.name.trim(),
+          brand: item.brand.trim(),
+          cost: Number(cost),
+          wears,
+          image,
+          user_id: user?.id,
         });
       }
-      cancelBulk();
       router.back();
     } catch (e) {
       Alert.alert("Could not save", e instanceof Error ? e.message : "Unknown error");
@@ -300,53 +239,53 @@ export default function AddClosetItemScreen() {
     }
   };
 
-  // ── Render: bulk capturing phase ──────────────────────────────────
-  if (bulkCapturing) {
+  // ── Phase: capturing (camera multi-shot) ──────────────────────────────────
+  if (phase === "capturing") {
     return (
-      <ThemedView style={styles.bulkCapture}>
-        <ThemedText type="subtitle" style={styles.bulkCaptureTitle}>
+      <ThemedView style={styles.capturePage}>
+        <ThemedText type="subtitle" style={styles.captureCount}>
           {pendingUris.length} photo{pendingUris.length !== 1 ? "s" : ""} taken
         </ThemedText>
-        <View style={styles.bulkCaptureThumbRow}>
+        <View style={styles.captureThumbs}>
           {pendingUris.slice(-4).map((uri, i) => (
-            <Image key={i} source={{ uri }} style={styles.bulkCapThumb} contentFit="cover" />
+            <Image key={i} source={{ uri }} style={styles.captureThumb} contentFit="cover" />
           ))}
         </View>
         <Pressable
           onPress={takeBulkPhoto}
           disabled={picking}
           style={({ pressed }) => [
-            styles.bulkCaptureBtn,
+            styles.captureBtn,
             { borderColor, backgroundColor: inputBackground },
             pressed && { opacity: 0.8 },
             picking && { opacity: 0.5 },
           ]}
         >
           <Ionicons name="camera-outline" size={22} color={textColor} />
-          <ThemedText style={styles.bulkCaptureBtnLabel}>Take another</ThemedText>
+          <ThemedText style={styles.captureBtnLabel}>Take another</ThemedText>
         </Pressable>
         <Pressable
-          onPress={startBulkEditing}
+          onPress={() => { startEditingWithUris(pendingUris); setPendingUris([]); }}
           disabled={pendingUris.length === 0}
           style={({ pressed }) => [
-            styles.bulkStartEditBtn,
+            styles.captureStart,
             pressed && { opacity: 0.85 },
             pendingUris.length === 0 && { opacity: 0.45 },
           ]}
         >
-          <ThemedText style={styles.bulkStartEditLabel} lightColor="#fff" darkColor="#fff">
+          <ThemedText style={styles.captureStartLabel} lightColor="#fff" darkColor="#fff">
             Done — fill in details →
           </ThemedText>
         </Pressable>
-        <Pressable onPress={cancelBulk} style={styles.bulkCancelLink}>
+        <Pressable onPress={() => { setPhase("pick"); setPendingUris([]); }} style={styles.cancelLink}>
           <ThemedText type="link">Cancel</ThemedText>
         </Pressable>
       </ThemedView>
     );
   }
 
-  // ── Render: bulk editing wizard ───────────────────────────────────
-  if (bulkItems !== null) {
+  // ── Phase: editing wizard ─────────────────────────────────────────────────
+  if (phase === "editing") {
     const current = bulkItems[bulkIndex];
     const progress = (bulkIndex + 1) / bulkItems.length;
     const isLast = bulkIndex === bulkItems.length - 1;
@@ -359,31 +298,34 @@ export default function AddClosetItemScreen() {
         enableOnAndroid
         extraScrollHeight={Platform.OS === "ios" ? 20 : 80}
       >
-        <ThemedView style={styles.bulkWizard}>
-          {/* Header */}
-          <View style={styles.bulkProgressHeader}>
-            <ThemedText style={styles.bulkProgressLabel}>
-              Item {bulkIndex + 1} of {bulkItems.length}
+        <ThemedView style={styles.wizardPage}>
+          <View style={styles.wizardHeader}>
+            <ThemedText style={styles.wizardProgress}>
+              {bulkItems.length > 1
+                ? `Item ${bulkIndex + 1} of ${bulkItems.length}`
+                : "Item details"}
             </ThemedText>
-            <Pressable onPress={cancelBulk}>
-              <ThemedText type="link" style={styles.bulkCancelInline}>Cancel</ThemedText>
+            <Pressable onPress={() => setPhase("pick")}>
+              <ThemedText type="link" style={styles.cancelInline}>Cancel</ThemedText>
             </Pressable>
           </View>
-          <View style={[styles.progressTrack, { borderColor }]}>
-            <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
-          </View>
 
-          {/* Image + form side by side */}
-          <View style={styles.bulkRow}>
+          {bulkItems.length > 1 && (
+            <View style={[styles.progressTrack, { borderColor }]}>
+              <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
+            </View>
+          )}
+
+          <View style={styles.wizardRow}>
             <Image
               source={{ uri: current.uri }}
-              style={styles.bulkPreview}
+              style={styles.wizardPreview}
               contentFit="cover"
             />
-            <View style={styles.bulkFields}>
+            <View style={styles.wizardFields}>
               <BrandInput
                 value={current.brand}
-                onChange={(v) => updateBulkField("brand", v)}
+                onChange={(v) => updateField("brand", v)}
                 editable={!saving}
               />
               <TextInput
@@ -391,8 +333,8 @@ export default function AddClosetItemScreen() {
                 placeholder="Name *"
                 placeholderTextColor={placeholderColor}
                 value={current.name}
-                onChangeText={(v) => updateBulkField("name", v)}
-                style={inputStyleCompact}
+                onChangeText={(v) => updateField("name", v)}
+                style={inputCompact}
                 editable={!saving}
                 returnKeyType="next"
                 onSubmitEditing={() => costRef.current?.focus()}
@@ -403,9 +345,9 @@ export default function AddClosetItemScreen() {
                 placeholder="Cost ($)"
                 placeholderTextColor={placeholderColor}
                 value={current.costText}
-                onChangeText={(v) => updateBulkField("costText", v)}
+                onChangeText={(v) => updateField("costText", v)}
                 keyboardType="numbers-and-punctuation"
-                style={inputStyleCompact}
+                style={inputCompact}
                 editable={!saving}
                 returnKeyType="next"
                 onSubmitEditing={() => wearsRef.current?.focus()}
@@ -416,9 +358,9 @@ export default function AddClosetItemScreen() {
                 placeholder="Prev. wears"
                 placeholderTextColor={placeholderColor}
                 value={current.wearsText}
-                onChangeText={(v) => updateBulkField("wearsText", v.replace(/[^0-9]/g, ""))}
+                onChangeText={(v) => updateField("wearsText", v.replace(/[^0-9]/g, ""))}
                 keyboardType="number-pad"
-                style={inputStyleCompact}
+                style={inputCompact}
                 editable={!saving}
                 returnKeyType="done"
                 onSubmitEditing={Keyboard.dismiss}
@@ -427,10 +369,10 @@ export default function AddClosetItemScreen() {
           </View>
 
           <Pressable
-            onPress={onBulkNext}
+            onPress={onNext}
             disabled={saving}
             style={({ pressed }) => [
-              styles.bulkNextBtn,
+              styles.nextBtn,
               pressed && { opacity: 0.85 },
               saving && { opacity: 0.6 },
             ]}
@@ -438,8 +380,12 @@ export default function AddClosetItemScreen() {
             {saving ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <ThemedText style={styles.bulkNextLabel} lightColor="#fff" darkColor="#fff">
-                {isLast ? `Save all ${bulkItems.length} items` : "Next →"}
+              <ThemedText style={styles.nextBtnLabel} lightColor="#fff" darkColor="#fff">
+                {isLast
+                  ? bulkItems.length > 1
+                    ? `Save all ${bulkItems.length} items`
+                    : "Save item"
+                  : "Next →"}
               </ThemedText>
             )}
           </Pressable>
@@ -448,227 +394,124 @@ export default function AddClosetItemScreen() {
     );
   }
 
-  // ── Render: normal single-item form ───────────────────────────────
+  // ── Phase: pick photos (initial screen) ───────────────────────────────────
   return (
-    <KeyboardAwareScrollView
-      style={styles.flex}
-      keyboardShouldPersistTaps="handled"
-      contentContainerStyle={styles.scrollContent}
-      enableOnAndroid
-      extraScrollHeight={Platform.OS === "ios" ? 20 : 80}
-    >
-      <ThemedView style={styles.container}>
-        {/* Bulk import section */}
-        <View style={styles.bulkSection}>
-          <ThemedText type="defaultSemiBold" style={styles.bulkSectionTitle}>
-            Import multiple items
-          </ThemedText>
-          <View style={styles.bulkSectionBtns}>
-            <Pressable
-              onPress={startBulkLibrary}
-              disabled={picking || saving}
-              style={({ pressed }) => [
-                styles.bulkSectionBtn,
-                { borderColor, backgroundColor: inputBackground },
-                pressed && { opacity: 0.8 },
-                (picking || saving) && { opacity: 0.5 },
-              ]}
-            >
-              <Ionicons name="images-outline" size={18} color={textColor} />
-              <ThemedText style={styles.bulkSectionBtnLabel}>Library</ThemedText>
-            </Pressable>
-            <Pressable
-              onPress={startBulkCamera}
-              disabled={picking || saving}
-              style={({ pressed }) => [
-                styles.bulkSectionBtn,
-                { borderColor, backgroundColor: inputBackground },
-                pressed && { opacity: 0.8 },
-                (picking || saving) && { opacity: 0.5 },
-              ]}
-            >
-              <Ionicons name="camera-outline" size={18} color={textColor} />
-              <ThemedText style={styles.bulkSectionBtnLabel}>Camera</ThemedText>
-            </Pressable>
-          </View>
-        </View>
+    <ThemedView style={styles.pickPage}>
+      <ThemedText type="subtitle" style={styles.pickTitle}>
+        Add photos to get started
+      </ThemedText>
+      <ThemedText style={styles.pickSubtitle}>
+        Select one or more items to add to your closet
+      </ThemedText>
 
-        <View style={[styles.divider, { backgroundColor: borderColor }]} />
-
-        {/* Single item form */}
-        <View style={styles.photoRow}>
-          <View
-            style={[styles.previewWrap, { borderColor }]}
-            accessibilityLabel={pickedUri ? "Selected item photo" : "Item photo preview"}
-          >
-            {pickedUri ? (
-              <Image source={{ uri: pickedUri }} style={styles.previewImage} contentFit="cover" />
-            ) : (
-              <View style={styles.previewPlaceholder}>
-                <Ionicons name="image-outline" size={32} color={placeholderColor} />
-              </View>
-            )}
-          </View>
-          <View style={styles.photoActions}>
-            <Pressable
-              onPress={() => runPicker("camera")}
-              disabled={picking || saving}
-              style={({ pressed }) => [
-                styles.photoBtn, { borderColor, backgroundColor: inputBackground },
-                pressed && styles.photoBtnPressed, (picking || saving) && styles.photoBtnDisabled,
-              ]}
-              accessibilityRole="button" accessibilityLabel="Take photo"
-            >
-              <Ionicons name="camera-outline" size={20} color={textColor} />
-              <ThemedText style={styles.photoBtnLabel}>Camera</ThemedText>
-            </Pressable>
-            <Pressable
-              onPress={() => runPicker("library")}
-              disabled={picking || saving}
-              style={({ pressed }) => [
-                styles.photoBtn, { borderColor, backgroundColor: inputBackground },
-                pressed && styles.photoBtnPressed, (picking || saving) && styles.photoBtnDisabled,
-              ]}
-              accessibilityRole="button" accessibilityLabel="Choose from library"
-            >
-              <Ionicons name="images-outline" size={20} color={textColor} />
-              <ThemedText style={styles.photoBtnLabel}>Library</ThemedText>
-            </Pressable>
-            <Pressable
-              onPress={pasteFromClipboard}
-              disabled={picking || saving}
-              style={({ pressed }) => [
-                styles.photoBtn, { borderColor, backgroundColor: inputBackground },
-                pressed && styles.photoBtnPressed, (picking || saving) && styles.photoBtnDisabled,
-              ]}
-              accessibilityRole="button" accessibilityLabel="Paste image from clipboard"
-            >
-              <Ionicons name="clipboard-outline" size={20} color={textColor} />
-              <ThemedText style={styles.photoBtnLabel}>Paste</ThemedText>
-            </Pressable>
-            {pickedUri ? (
-              <Pressable
-                onPress={() => setPickedUri(null)}
-                disabled={saving}
-                style={styles.clearPhoto}
-                accessibilityRole="button" accessibilityLabel="Remove photo"
-              >
-                <ThemedText type="link" style={styles.clearPhotoText}>Remove Photo</ThemedText>
-              </Pressable>
-            ) : null}
-          </View>
-        </View>
-
-        <ThemedText type="defaultSemiBold" style={styles.label}>Brand</ThemedText>
-        <BrandInput value={brand} onChange={setBrand} editable={!saving} />
-        <ThemedText type="defaultSemiBold" style={styles.label}>Name</ThemedText>
-        <TextInput
-          accessibilityLabel="Item name"
-          placeholder="e.g. Navy chinos"
-          placeholderTextColor={placeholderColor}
-          value={name}
-          onChangeText={setName}
-          style={inputStyle}
-          editable={!saving}
-          returnKeyType="next"
-          onSubmitEditing={() => costRef.current?.focus()}
-        />
-        <ThemedText type="defaultSemiBold" style={styles.label}>Cost ($)</ThemedText>
-        <TextInput
-          ref={costRef}
-          accessibilityLabel="Item cost in dollars"
-          placeholder="0"
-          placeholderTextColor={placeholderColor}
-          value={costText}
-          onChangeText={setCostText}
-          keyboardType="decimal-pad"
-          style={inputStyle}
-          editable={!saving}
-          returnKeyType="next"
-          onSubmitEditing={() => wearsRef.current?.focus()}
-        />
-        <ThemedText type="defaultSemiBold" style={styles.label}>Previous wears</ThemedText>
-        <TextInput
-          ref={wearsRef}
-          accessibilityLabel="Number of times already worn"
-          placeholder="0"
-          placeholderTextColor={placeholderColor}
-          value={wearsText}
-          onChangeText={(v) => setWearsText(v.replace(/[^0-9]/g, ""))}
-          keyboardType="number-pad"
-          style={inputStyle}
-          editable={!saving}
-          returnKeyType="done"
-          onSubmitEditing={Keyboard.dismiss}
-        />
+      <View style={styles.pickBtns}>
+        <Pressable
+          onPress={startCamera}
+          disabled={picking}
+          style={({ pressed }) => [
+            styles.pickBtn,
+            { borderColor, backgroundColor: inputBackground },
+            pressed && { opacity: 0.8 },
+            picking && { opacity: 0.5 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Take photo with camera"
+        >
+          <Ionicons name="camera-outline" size={32} color={textColor} />
+          <ThemedText style={styles.pickBtnLabel}>Camera</ThemedText>
+          <ThemedText style={styles.pickBtnSub}>Take photos</ThemedText>
+        </Pressable>
 
         <Pressable
-          onPress={onSave}
-          disabled={saving || picking}
+          onPress={pickFromLibrary}
+          disabled={picking}
           style={({ pressed }) => [
-            styles.saveBtn,
-            pressed && styles.saveBtnPressed,
-            (saving || picking) && styles.saveBtnDisabled,
+            styles.pickBtn,
+            { borderColor, backgroundColor: inputBackground },
+            pressed && { opacity: 0.8 },
+            picking && { opacity: 0.5 },
           ]}
-          accessibilityRole="button" accessibilityLabel="Save clothing item"
+          accessibilityRole="button"
+          accessibilityLabel="Choose from photo library"
         >
-          {saving ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <ThemedText style={styles.saveBtnText} lightColor="#fff" darkColor="#fff">
-              Save item
-            </ThemedText>
-          )}
+          <Ionicons name="images-outline" size={32} color={textColor} />
+          <ThemedText style={styles.pickBtnLabel}>Library</ThemedText>
+          <ThemedText style={styles.pickBtnSub}>Select multiple</ThemedText>
         </Pressable>
-      </ThemedView>
-    </KeyboardAwareScrollView>
+
+        <Pressable
+          onPress={pasteFromClipboard}
+          disabled={picking}
+          style={({ pressed }) => [
+            styles.pickBtn,
+            { borderColor, backgroundColor: inputBackground },
+            pressed && { opacity: 0.8 },
+            picking && { opacity: 0.5 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Paste image from clipboard"
+        >
+          <Ionicons name="clipboard-outline" size={32} color={textColor} />
+          <ThemedText style={styles.pickBtnLabel}>Paste</ThemedText>
+          <ThemedText style={styles.pickBtnSub}>From clipboard</ThemedText>
+        </Pressable>
+      </View>
+
+      {picking && <ActivityIndicator style={styles.pickSpinner} />}
+    </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   scrollContent: { flexGrow: 1 },
-  container: { flex: 1, padding: 20, paddingBottom: 32, gap: 8 },
 
-  // ── Bulk section (top of normal form) ───────────────────────────
-  bulkSection: { gap: 8 },
-  bulkSectionTitle: { opacity: 0.7, fontSize: 13 },
-  bulkSectionBtns: { flexDirection: "row", gap: 10 },
-  bulkSectionBtn: {
+  // ── Pick page ──────────────────────────────────────────────────────
+  pickPage: {
     flex: 1,
-    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    height: 44,
-    borderRadius: 10,
+    paddingHorizontal: 24,
+    gap: 12,
+  },
+  pickTitle: { textAlign: "center" },
+  pickSubtitle: { textAlign: "center", opacity: 0.55, fontSize: 14, marginBottom: 8 },
+  pickBtns: { flexDirection: "row", gap: 12, alignSelf: "stretch" },
+  pickBtn: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 24,
+    borderRadius: 14,
     borderWidth: 1,
   },
-  bulkSectionBtnLabel: { fontSize: 14, fontWeight: "600" },
-  divider: { height: StyleSheet.hairlineWidth, opacity: 0.4, marginVertical: 4 },
+  pickBtnLabel: { fontSize: 15, fontWeight: "700" },
+  pickBtnSub: { fontSize: 11, opacity: 0.5 },
+  pickSpinner: { marginTop: 16 },
 
-  // ── Bulk capturing phase ─────────────────────────────────────────
-  bulkCapture: {
+  // ── Capturing page ─────────────────────────────────────────────────
+  capturePage: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     gap: 20,
     padding: 32,
   },
-  bulkCaptureTitle: { textAlign: "center" },
-  bulkCaptureThumbRow: {
+  captureCount: { textAlign: "center" },
+  captureThumbs: {
     flexDirection: "row",
     gap: 8,
     flexWrap: "wrap",
     justifyContent: "center",
   },
-  bulkCapThumb: {
+  captureThumb: {
     width: 70,
     height: 93,
     borderRadius: 8,
     backgroundColor: "rgba(128,128,128,0.15)",
   },
-  bulkCaptureBtn: {
+  captureBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -679,28 +522,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     alignSelf: "stretch",
   },
-  bulkCaptureBtnLabel: { fontSize: 16, fontWeight: "600" },
-  bulkStartEditBtn: {
+  captureBtnLabel: { fontSize: 16, fontWeight: "600" },
+  captureStart: {
     height: 50,
     borderRadius: 12,
-    backgroundColor: "#ffb361",
+    backgroundColor: "#000",
     alignItems: "center",
     justifyContent: "center",
     alignSelf: "stretch",
     paddingHorizontal: 24,
   },
-  bulkStartEditLabel: { fontSize: 16, fontWeight: "700" },
-  bulkCancelLink: { paddingVertical: 8 },
+  captureStartLabel: { fontSize: 16, fontWeight: "700" },
+  cancelLink: { paddingVertical: 8 },
 
-  // ── Bulk wizard ──────────────────────────────────────────────────
-  bulkWizard: { flex: 1, padding: 16, paddingBottom: 24, gap: 10 },
-  bulkProgressHeader: {
+  // ── Wizard page ────────────────────────────────────────────────────
+  wizardPage: { flex: 1, padding: 16, paddingBottom: 24, gap: 10 },
+  wizardHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
-  bulkProgressLabel: { fontSize: 14, fontWeight: "600" },
-  bulkCancelInline: { fontSize: 14 },
+  wizardProgress: { fontSize: 14, fontWeight: "600" },
+  cancelInline: { fontSize: 14 },
   progressTrack: {
     height: 4,
     borderRadius: 2,
@@ -709,58 +552,32 @@ const styles = StyleSheet.create({
   },
   progressFill: {
     height: "100%",
-    backgroundColor: "#ffb361",
+    backgroundColor: "#000",
     borderRadius: 2,
   },
-  bulkRow: { flexDirection: "row", gap: 12, alignItems: "flex-start" },
-  bulkPreview: {
+  wizardRow: { flexDirection: "row", gap: 12, alignItems: "flex-start" },
+  wizardPreview: {
     width: 110,
     aspectRatio: 3 / 4,
     borderRadius: 10,
     backgroundColor: "rgba(128,128,128,0.15)",
     flexShrink: 0,
   },
-  bulkFields: { flex: 1, gap: 8 },
-  bulkNextBtn: {
+  wizardFields: { flex: 1, gap: 8 },
+  inputCompact: {
+    height: 38,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    fontSize: 14,
+  },
+  nextBtn: {
     height: 50,
     borderRadius: 12,
-    backgroundColor: "#ffb361",
+    backgroundColor: "#000",
     alignItems: "center",
     justifyContent: "center",
     marginTop: 4,
   },
-  bulkNextLabel: { fontSize: 16, fontWeight: "700" },
-
-  // ── Normal single-item form ──────────────────────────────────────
-  label: { marginTop: 12 },
-  photoRow: { flexDirection: "row", gap: 10, marginTop: 4, alignItems: "stretch" },
-  previewWrap: {
-    borderWidth: 1, borderRadius: 12, overflow: "hidden",
-    aspectRatio: 3 / 4, width: 160, flexShrink: 0,
-  },
-  previewImage: { width: "100%", height: "100%" },
-  previewPlaceholder: { flex: 1, alignItems: "center", justifyContent: "center" },
-  photoActions: { flex: 1, flexDirection: "column", gap: 8, justifyContent: "center" },
-  photoBtn: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center",
-    gap: 8, height: 54, borderRadius: 10, borderWidth: 1,
-  },
-  photoBtnLabel: { fontSize: 14, fontWeight: "600" },
-  photoBtnPressed: { opacity: 0.85 },
-  photoBtnDisabled: { opacity: 0.5 },
-  clearPhoto: { alignSelf: "center", paddingVertical: 2 },
-  clearPhotoText: { fontSize: 13 },
-  input: {
-    height: 44, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, fontSize: 16,
-  },
-  inputCompact: {
-    height: 38, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, fontSize: 14,
-  },
-  saveBtn: {
-    marginTop: 28, height: 48, borderRadius: 10, backgroundColor: "#0a7ea4",
-    alignItems: "center", justifyContent: "center",
-  },
-  saveBtnPressed: { opacity: 0.85 },
-  saveBtnDisabled: { opacity: 0.6 },
-  saveBtnText: { fontSize: 16, fontWeight: "600" },
+  nextBtnLabel: { fontSize: 16, fontWeight: "700" },
 });

@@ -113,9 +113,9 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingTop: 10,
-    paddingBottom: 2,
-    gap: 3,
+    paddingTop: 6,
+    paddingBottom: 0,
+    gap: 0,
   },
   tabLabel: {
     fontSize: 10,

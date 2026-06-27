@@ -17,6 +17,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
@@ -26,6 +27,7 @@ import {
   getOutfitsForDate,
 } from "@/lib/outfit-storage";
 import { getSupabase } from "@/supabase-client";
+import { getWeatherMap } from "@/lib/weather";
 
 type ItemData = {
   name: string;
@@ -51,10 +53,12 @@ async function loadItemData(): Promise<Record<string, ItemData>> {
 export default function DayOutfitsScreen() {
   const { date } = useLocalSearchParams<{ date: string }>();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const dateKey = typeof date === "string" ? date : "";
   const [list, setList] = useState<DayOutfit[]>([]);
   const [itemData, setItemData] = useState<Record<string, ItemData>>({});
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [maxTemp, setMaxTemp] = useState<number | null>(null);
 
   const refresh = useCallback(async () => {
     if (!dateKey) return;
@@ -77,6 +81,9 @@ export default function DayOutfitsScreen() {
           setItemData(data);
         }
       });
+      getWeatherMap()
+        .then((w) => { if (active && dateKey in w) setMaxTemp(w[dateKey]); })
+        .catch(() => {});
       return () => {
         active = false;
       };
@@ -96,9 +103,15 @@ export default function DayOutfitsScreen() {
             setDeletingId(outfit.id);
             try {
               await deleteOutfit(dateKey, outfit.id);
-              const rows = await refresh();
-              if (rows && rows.length === 0) {
+              // Update list immediately from local state so the UI responds
+              // even if the subsequent Supabase refresh is slow or fails.
+              const updated = list.filter((o) => o.id !== outfit.id);
+              if (updated.length === 0) {
                 router.back();
+              } else {
+                setList(updated);
+                // Best-effort background refresh to sync item metadata.
+                refresh().catch(() => {});
               }
             } catch (e) {
               Alert.alert("Error", e instanceof Error ? e.message : "Could not delete");
@@ -126,9 +139,14 @@ export default function DayOutfitsScreen() {
     <>
       <Stack.Screen options={{ title: dateKey }} />
       <ThemedView style={styles.container}>
-        <ThemedText style={styles.subtitle}>
-          {list.length} outfit{list.length === 1 ? "" : "s"} this day
-        </ThemedText>
+        <View style={styles.subtitleRow}>
+          <ThemedText style={styles.subtitle}>
+            {list.length} outfit{list.length === 1 ? "" : "s"} this day
+          </ThemedText>
+          {maxTemp !== null && (
+            <ThemedText style={styles.tempBadge}>🌡 {maxTemp}°F</ThemedText>
+          )}
+        </View>
         <FlatList
           data={list}
           keyExtractor={(item) => item.id}
@@ -229,6 +247,21 @@ export default function DayOutfitsScreen() {
             <ThemedText style={styles.muted}>No outfits saved for this day.</ThemedText>
           }
         />
+
+        <Pressable
+          onPress={() => router.push(`/log-outfit?date=${dateKey}`)}
+          style={({ pressed }) => [
+            styles.addOutfitBtn,
+            { marginBottom: insets.bottom + 12 },
+            pressed && { opacity: 0.8 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Add outfit"
+        >
+          <ThemedText style={styles.addOutfitBtnLabel} lightColor="#fff" darkColor="#fff">
+            + Add outfit
+          </ThemedText>
+        </Pressable>
       </ThemedView>
     </>
   );
@@ -246,9 +279,18 @@ const styles = StyleSheet.create({
     padding: 24,
     gap: 16,
   },
-  subtitle: {
+  subtitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     marginBottom: 12,
+  },
+  subtitle: {
     opacity: 0.8,
+  },
+  tempBadge: {
+    fontSize: 13,
+    opacity: 0.7,
   },
   list: {
     paddingBottom: 40,
@@ -331,6 +373,18 @@ const styles = StyleSheet.create({
   },
   muted: {
     opacity: 0.6,
+  },
+  addOutfitBtn: {
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: "#000",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 12,
+  },
+  addOutfitBtnLabel: {
+    fontSize: 16,
+    fontWeight: "700",
   },
   backBtn: {
     padding: 12,

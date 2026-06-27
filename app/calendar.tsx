@@ -2,6 +2,8 @@ import { useFocusEffect, useRouter } from "expo-router";
 import React, { useCallback, useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
+import { getWeatherMap, type WeatherMap } from "@/lib/weather";
+
 import { DayTileOutfits } from "@/components/day-tile-outfits";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
@@ -58,6 +60,7 @@ export default function CalendarScreen() {
   const router = useRouter();
   const [outfitsByDay, setOutfitsByDay] = useState<Record<string, DayOutfit[]>>({});
   const [itemMetaMap, setItemMetaMap] = useState<Record<string, ItemMeta>>({});
+  const [weatherMap, setWeatherMap] = useState<WeatherMap>({});
 
   useFocusEffect(
     useCallback(() => {
@@ -68,6 +71,7 @@ export default function CalendarScreen() {
           setItemMetaMap(meta);
         }
       });
+      getWeatherMap().then((w) => { if (active) setWeatherMap(w); }).catch(() => {});
       return () => {
         active = false;
       };
@@ -124,6 +128,7 @@ export default function CalendarScreen() {
               );
               const hasCpw = item.outfits.length > 0 && totalCpw > 0;
               const isToday = item.dateKey === todayKey;
+              const temp = item.dateKey != null ? weatherMap[item.dateKey] : undefined;
 
               return (
                 <View key={colIndex} style={styles.dayCell}>
@@ -158,6 +163,9 @@ export default function CalendarScreen() {
                           ${totalCpw.toFixed(2)}
                         </Text>
                       )}
+                      {temp !== undefined && (
+                        <Text style={styles.tempLabel}>{temp}°</Text>
+                      )}
                     </Pressable>
                   ) : (
                     <View style={styles.emptyCell} />
@@ -173,7 +181,7 @@ export default function CalendarScreen() {
 }
 
 /** Dark grey calendar grid lines */
-const GRID_LINE = "#5C5C5C";
+const GRID_LINE = "rgba(128,128,128,0.35)";
 
 const styles = StyleSheet.create({
   container: {
@@ -202,8 +210,8 @@ const styles = StyleSheet.create({
     flex: 1,
     marginHorizontal: 16,
     marginBottom: 16,
-    borderTopWidth: 1,
-    borderLeftWidth: 1,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderLeftWidth: StyleSheet.hairlineWidth,
     borderColor: GRID_LINE,
   },
   gridRow: {
@@ -214,8 +222,8 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "flex-start",
-    borderRightWidth: 1,
-    borderBottomWidth: 1,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderColor: GRID_LINE,
     overflow: "hidden",
   },
@@ -249,7 +257,7 @@ const styles = StyleSheet.create({
     width: 22,
     height: 22,
     borderRadius: 11,
-    backgroundColor: "#ffb361",
+    backgroundColor: "#000",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 1,
@@ -260,8 +268,14 @@ const styles = StyleSheet.create({
   cpwLabel: {
     fontSize: 9,
     fontWeight: "700",
-    color: "#ffb361",
+    color: "#000",
     marginTop: 2,
     letterSpacing: 0.2,
+  },
+  tempLabel: {
+    fontSize: 9,
+    color: "rgba(128,128,128,0.85)",
+    marginTop: 1,
+    letterSpacing: 0.1,
   },
 });
