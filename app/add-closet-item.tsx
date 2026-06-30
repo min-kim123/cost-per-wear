@@ -19,6 +19,7 @@ import {
 import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
 
 import { BrandInput } from "@/components/brand-input";
+import { CategoryPicker, type Category } from "@/components/category-picker";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
@@ -37,6 +38,7 @@ type BulkItem = {
   name: string;
   costText: string;
   wearsText: string;
+  category: Category | null;
 };
 
 // ── Phase types ──────────────────────────────────────────────────────────────
@@ -94,7 +96,7 @@ export default function AddClosetItemScreen() {
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   function startEditingWithUris(uris: string[]) {
-    setBulkItems(uris.map((uri) => ({ uri, brand: "", name: "", costText: "", wearsText: "" })));
+    setBulkItems(uris.map((uri) => ({ uri, brand: "", name: "", costText: "", wearsText: "", category: null })));
     setBulkIndex(0);
     setPhase("editing");
   }
@@ -192,7 +194,7 @@ export default function AddClosetItemScreen() {
   };
 
   // ── Bulk field update ─────────────────────────────────────────────────────
-  const updateField = (field: keyof Omit<BulkItem, "uri">, value: string) => {
+  const updateField = (field: keyof Omit<BulkItem, "uri">, value: string | Category | null) => {
     setBulkItems((prev) => {
       const next = [...prev];
       next[bulkIndex] = { ...next[bulkIndex], [field]: value };
@@ -228,6 +230,7 @@ export default function AddClosetItemScreen() {
           cost: Number(cost),
           wears,
           image,
+          category: item.category ?? null,
           user_id: user?.id,
         });
       }
@@ -367,6 +370,13 @@ export default function AddClosetItemScreen() {
               />
             </View>
           </View>
+          <ThemedText style={styles.categoryLabel}>Category</ThemedText>
+          <CategoryPicker
+            value={current.category}
+            onChange={(cat) => updateField("category", cat)}
+            nullable
+            disabled={saving}
+          />
 
           <Pressable
             onPress={onNext}
@@ -570,6 +580,12 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 10,
     fontSize: 14,
+  },
+  categoryLabel: {
+    fontSize: 13,
+    fontWeight: "600",
+    opacity: 0.65,
+    marginTop: 2,
   },
   nextBtn: {
     height: 50,

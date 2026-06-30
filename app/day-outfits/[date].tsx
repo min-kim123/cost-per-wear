@@ -26,8 +26,8 @@ import {
   deleteOutfit,
   getOutfitsForDate,
 } from "@/lib/outfit-storage";
-import { getSupabase } from "@/supabase-client";
 import { getWeatherMap } from "@/lib/weather";
+import { getSupabase } from "@/supabase-client";
 
 type ItemData = {
   name: string;
@@ -75,14 +75,18 @@ export default function DayOutfitsScreen() {
     useCallback(() => {
       let active = true;
       if (!dateKey) return;
-      Promise.all([getOutfitsForDate(dateKey), loadItemData()]).then(([rows, data]) => {
-        if (active) {
-          setList(rows);
-          setItemData(data);
-        }
-      });
+      Promise.all([getOutfitsForDate(dateKey), loadItemData()]).then(
+        ([rows, data]) => {
+          if (active) {
+            setList(rows);
+            setItemData(data);
+          }
+        },
+      );
       getWeatherMap()
-        .then((w) => { if (active && dateKey in w) setMaxTemp(w[dateKey]); })
+        .then((w) => {
+          if (active && dateKey in w) setMaxTemp(w[dateKey]);
+        })
         .catch(() => {});
       return () => {
         active = false;
@@ -114,7 +118,10 @@ export default function DayOutfitsScreen() {
                 refresh().catch(() => {});
               }
             } catch (e) {
-              Alert.alert("Error", e instanceof Error ? e.message : "Could not delete");
+              Alert.alert(
+                "Error",
+                e instanceof Error ? e.message : "Could not delete",
+              );
             } finally {
               setDeletingId(null);
             }
@@ -173,7 +180,11 @@ export default function DayOutfitsScreen() {
                     {deletingId === item.id ? (
                       <ActivityIndicator size="small" color="#dc2626" />
                     ) : (
-                      <Ionicons name="trash-outline" size={22} color="#dc2626" />
+                      <Ionicons
+                        name="trash-outline"
+                        size={22}
+                        color="#dc2626"
+                      />
                     )}
                   </Pressable>
                 </View>
@@ -196,10 +207,17 @@ export default function DayOutfitsScreen() {
                           />
                         ) : (
                           <View style={styles.itemThumbPlaceholder}>
-                            <Ionicons name="shirt-outline" size={24} color="rgba(128,128,128,0.6)" />
+                            <Ionicons
+                              name="shirt-outline"
+                              size={24}
+                              color="rgba(128,128,128,0.6)"
+                            />
                           </View>
                         )}
-                        <ThemedText numberOfLines={2} style={styles.itemThumbLabel}>
+                        <ThemedText
+                          numberOfLines={2}
+                          style={styles.itemThumbLabel}
+                        >
                           {name}
                         </ThemedText>
                       </View>
@@ -209,7 +227,9 @@ export default function DayOutfitsScreen() {
 
                 {item.photoUri && itemsWithData.length > 0 && (
                   <>
-                    <ThemedText style={styles.itemsLabel}>Items worn</ThemedText>
+                    <ThemedText style={styles.itemsLabel}>
+                      Items worn
+                    </ThemedText>
                     <ScrollView
                       horizontal
                       showsHorizontalScrollIndicator={false}
@@ -225,10 +245,17 @@ export default function DayOutfitsScreen() {
                             />
                           ) : (
                             <View style={styles.itemThumbPlaceholder}>
-                              <Ionicons name="shirt-outline" size={20} color="rgba(128,128,128,0.6)" />
+                              <Ionicons
+                                name="shirt-outline"
+                                size={20}
+                                color="rgba(128,128,128,0.6)"
+                              />
                             </View>
                           )}
-                          <ThemedText numberOfLines={2} style={styles.itemThumbLabel}>
+                          <ThemedText
+                            numberOfLines={2}
+                            style={styles.itemThumbLabel}
+                          >
                             {name}
                           </ThemedText>
                         </View>
@@ -238,13 +265,17 @@ export default function DayOutfitsScreen() {
                 )}
 
                 {itemsWithData.length === 0 && (
-                  <ThemedText style={styles.muted}>No items selected</ThemedText>
+                  <ThemedText style={styles.muted}>
+                    No items selected
+                  </ThemedText>
                 )}
               </View>
             );
           }}
           ListEmptyComponent={
-            <ThemedText style={styles.muted}>No outfits saved for this day.</ThemedText>
+            <ThemedText style={styles.muted}>
+              No outfits saved for this day.
+            </ThemedText>
           }
         />
 
@@ -258,7 +289,11 @@ export default function DayOutfitsScreen() {
           accessibilityRole="button"
           accessibilityLabel="Add outfit"
         >
-          <ThemedText style={styles.addOutfitBtnLabel} lightColor="#fff" darkColor="#fff">
+          <ThemedText
+            style={styles.addOutfitBtnLabel}
+            lightColor="#fff"
+            darkColor="#fff"
+          >
             + Add outfit
           </ThemedText>
         </Pressable>

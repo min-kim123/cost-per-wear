@@ -5,11 +5,11 @@ import { Platform, Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SceneMap, TabView } from "react-native-tab-view";
 
-import { ThemedText } from "@/components/themed-text";
 import { Colors } from "@/constants/theme";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import CalendarScreen from "./calendar";
 import ClosetScreen from "./closet";
+import DataScreen from "./data";
 import HomeScreen from "./index";
 import SettingsScreen from "./settings";
 
@@ -17,6 +17,7 @@ const routes = [
   { key: "calendar", title: "Calendar" },
   { key: "index", title: "Home" },
   { key: "closet", title: "Closet" },
+  { key: "data", title: "Data" },
   { key: "settings", title: "Settings" },
 ] as const;
 
@@ -25,7 +26,8 @@ type RouteKey = (typeof routes)[number]["key"];
 const ICONS: Record<RouteKey, { default: string; active: string }> = {
   calendar: { default: "calendar-outline", active: "calendar" },
   index: { default: "camera-outline", active: "camera" },
-  closet: { default: "bag-outline", active: "bag" },
+  closet: { default: "shirt-outline", active: "shirt" },
+  data: { default: "bar-chart-outline", active: "bar-chart" },
   settings: { default: "settings-outline", active: "settings" },
 };
 
@@ -33,6 +35,7 @@ const renderScene = SceneMap({
   calendar: CalendarScreen,
   index: HomeScreen,
   closet: ClosetScreen,
+  data: DataScreen,
   settings: SettingsScreen,
 });
 
@@ -42,7 +45,8 @@ export default function TabLayout() {
   const tint = Colors[colorScheme ?? "light"].tint;
   const iconDefault = Colors[colorScheme ?? "light"].tabIconDefault;
   const tabBarBg = colorScheme === "dark" ? "#1c1c1e" : "#fff";
-  const dividerColor = colorScheme === "dark" ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)";
+  const dividerColor =
+    colorScheme === "dark" ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)";
 
   const [index, setIndex] = useState(1); // default to Home
 
@@ -72,7 +76,10 @@ export default function TabLayout() {
           return (
             <Pressable
               key={route.key}
-              style={({ pressed }) => [styles.tabItem, pressed && { opacity: 0.7 }]}
+              style={({ pressed }) => [
+                styles.tabItem,
+                pressed && { opacity: 0.7 },
+              ]}
               onPress={() => handleIndexChange(i)}
               accessibilityRole="tab"
               accessibilityLabel={route.title}
@@ -83,19 +90,27 @@ export default function TabLayout() {
                 size={26}
                 color={color}
               />
-              <ThemedText style={[styles.tabLabel, { color }]}>
-                {route.title}
-              </ThemedText>
             </Pressable>
           );
         })}
       </View>
     );
-  }, [index, tint, iconDefault, insets.bottom, tabBarBg, dividerColor, handleIndexChange]);
+  }, [
+    index,
+    tint,
+    iconDefault,
+    insets.bottom,
+    tabBarBg,
+    dividerColor,
+    handleIndexChange,
+  ]);
 
   return (
     <TabView
-      navigationState={{ index, routes: routes as unknown as { key: string; title: string }[] }}
+      navigationState={{
+        index,
+        routes: routes as unknown as { key: string; title: string }[],
+      }}
       renderScene={renderScene}
       onIndexChange={handleIndexChange}
       renderTabBar={renderTabBar}
@@ -113,12 +128,6 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingTop: 6,
-    paddingBottom: 0,
-    gap: 0,
-  },
-  tabLabel: {
-    fontSize: 10,
-    fontWeight: "600",
+    paddingVertical: 10,
   },
 });

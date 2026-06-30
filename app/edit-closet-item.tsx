@@ -5,20 +5,21 @@ import * as ImagePicker from "expo-image-picker";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    KeyboardAvoidingView,
-    Modal,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    TextInput,
-    View,
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { BrandInput } from "@/components/brand-input";
+import { CategoryPicker, type Category } from "@/components/category-picker";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
@@ -39,6 +40,7 @@ export default function EditClosetItemScreen() {
   const [name, setName] = useState("");
   const [costText, setCostText] = useState("");
   const [wearsText, setWearsText] = useState("");
+  const [category, setCategory] = useState<Category | null>(null);
   const [existingImageUrl, setExistingImageUrl] = useState<string | null>(null);
   const [pickedUri, setPickedUri] = useState<string | null>(null);
   const [imageCleared, setImageCleared] = useState(false);
@@ -66,7 +68,7 @@ export default function EditClosetItemScreen() {
     const supabase = getSupabase();
     supabase
       .from("closet")
-      .select("id, brand, name, cost, wears, image, created_at")
+      .select("id, brand, name, cost, wears, image, created_at, category")
       .eq("id", id)
       .single()
       .then(({ data, error }) => {
@@ -81,6 +83,7 @@ export default function EditClosetItemScreen() {
         setWearsText(data.wears != null ? String(data.wears) : "0");
         setExistingImageUrl(data.image ?? null);
         setCreatedAt(data.created_at ?? null);
+        setCategory((data.category as Category | null) ?? null);
       })
       .finally(() => setLoadingItem(false));
   }, [id, router]);
@@ -162,7 +165,14 @@ export default function EditClosetItemScreen() {
 
       const { error } = await supabase
         .from("closet")
-        .update({ name: trimmed, brand: brand.trim(), cost, wears, image })
+        .update({
+          name: trimmed,
+          brand: brand.trim(),
+          cost,
+          wears,
+          image,
+          category: category ?? null,
+        })
         .eq("id", id);
 
       if (error) throw new Error(error.message);
@@ -394,6 +404,16 @@ export default function EditClosetItemScreen() {
           ) : null}
 
           <ThemedText type="defaultSemiBold" style={styles.label}>
+            Category
+          </ThemedText>
+          <CategoryPicker
+            value={category}
+            onChange={setCategory}
+            nullable
+            disabled={busy}
+          />
+
+          <ThemedText type="defaultSemiBold" style={styles.label}>
             Brand
           </ThemedText>
           <BrandInput value={brand} onChange={setBrand} editable={!busy} />
@@ -456,7 +476,7 @@ export default function EditClosetItemScreen() {
             busy && styles.saveBtnDisabled,
           ]}
           accessibilityRole="button"
-          accessibilityLabel="Save changes"
+          accessibilityLabel="Save"
         >
           {saving ? (
             <ActivityIndicator color="#fff" />
@@ -466,7 +486,7 @@ export default function EditClosetItemScreen() {
               lightColor="#fff"
               darkColor="#fff"
             >
-              Save changes
+              Save
             </ThemedText>
           )}
         </Pressable>
@@ -570,7 +590,7 @@ const styles = StyleSheet.create({
   saveBtn: {
     height: 48,
     borderRadius: 10,
-    backgroundColor: "#0a7ea4",
+    backgroundColor: "#000000",
     alignItems: "center",
     justifyContent: "center",
   },

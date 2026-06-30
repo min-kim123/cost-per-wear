@@ -7,16 +7,17 @@ import type { ImageSourcePropType } from "react-native";
 import {
   ActivityIndicator,
   FlatList,
-  Platform,
+  Modal,
   Pressable,
   RefreshControl,
   StyleSheet,
   TextInput,
   useWindowDimensions,
-  View,
+  View
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { CategoryFilterBar, type Category } from "@/components/category-picker";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
@@ -29,6 +30,7 @@ type ClothingItem = {
   image: ImageSourcePropType;
   wears: number;
   cost: number;
+  category: Category | null;
 };
 
 type ClosetRow = {
@@ -38,6 +40,7 @@ type ClosetRow = {
   cost: number | string | null;
   wears: number | null;
   image: string | null;
+  category: string | null;
 };
 
 function mapClosetRowToItem(row: ClosetRow): ClothingItem {
@@ -59,13 +62,14 @@ function mapClosetRowToItem(row: ClosetRow): ClothingItem {
     cost: Number.isFinite(cost) && cost >= 0 ? cost : 0,
     wears: typeof row.wears === "number" && row.wears >= 0 ? row.wears : 0,
     image,
+    category: (row.category as Category | null) ?? null,
   };
 }
 
 async function loadClosetFromSupabase(): Promise<ClothingItem[]> {
   const { data, error } = await getSupabase()
     .from("closet")
-    .select("id, brand, name, cost, wears, image")
+    .select("id, brand, name, cost, wears, image, category")
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -79,6 +83,44 @@ function formatCurrency(value: number) {
   return `$${value.toFixed(2)}`;
 }
 
+type SortKey =
+  | "cpw_asc"
+  | "cpw_desc"
+  | "cost_asc"
+  | "cost_desc"
+  | "wears_asc"
+  | "wears_desc";
+
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: "cpw_asc", label: "Cost/wear: low → high" },
+  { key: "cpw_desc", label: "Cost/wear: high → low" },
+  { key: "cost_asc", label: "Cost: low → high" },
+  { key: "cost_desc", label: "Cost: high → low" },
+  { key: "wears_asc", label: "Wears: low → high" },
+  { key: "wears_desc", label: "Wears: high → low" },
+];
+
+function sortItems(items: ClothingItem[], key: SortKey): ClothingItem[] {
+  return [...items].sort((a, b) => {
+    const cpwA = a.cost / Math.max(a.wears, 1);
+    const cpwB = b.cost / Math.max(b.wears, 1);
+    switch (key) {
+      case "cpw_asc":
+        return cpwA - cpwB;
+      case "cpw_desc":
+        return cpwB - cpwA;
+      case "cost_asc":
+        return a.cost - b.cost;
+      case "cost_desc":
+        return b.cost - a.cost;
+      case "wears_asc":
+        return a.wears - b.wears;
+      case "wears_desc":
+        return b.wears - a.wears;
+    }
+  });
+}
+
 export default function ClosetScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -88,6 +130,9 @@ export default function ClosetScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [fabOpen, setFabOpen] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState<Category | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [showSortSheet, setShowSortSheet] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [incrementing, setIncrementing] = useState(false);
@@ -125,7 +170,7 @@ export default function ClosetScreen() {
   const textColor = useThemeColor({}, "text");
   const placeholderColor = useThemeColor({ light: "#8E8E93" }, "icon");
   const borderColor = useThemeColor({ light: "#C6C6C8" }, "icon");
-  const inputBackground = useThemeColor({ light: "#EFEFF4" }, "background");
+  const inputBackground = useThemeColor({ light: "#F8F8F8" }, "background");
   const cardBackground = useThemeColor(
     { light: "#ffffff", dark: "#1c1c1e" },
     "background",
@@ -133,13 +178,16 @@ export default function ClosetScreen() {
 
   const filteredItems = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter(
-      (item) =>
+    const filtered = items.filter((item) => {
+      if (categoryFilter && item.category !== categoryFilter) return false;
+      if (!q) return true;
+      return (
         item.name.toLowerCase().includes(q) ||
-        item.brand.toLowerCase().includes(q),
-    );
-  }, [items, searchQuery]);
+        item.brand.toLowerCase().includes(q)
+      );
+    });
+    return sortKey ? sortItems(filtered, sortKey) : filtered;
+  }, [items, searchQuery, categoryFilter, sortKey]);
 
   useFocusEffect(
     useCallback(() => {
@@ -240,23 +288,52 @@ export default function ClosetScreen() {
             ]}
             ListHeaderComponent={
               <View style={styles.searchHeader}>
-                <TextInput
-                  accessibilityLabel="Search clothing by name or brand"
-                  placeholder="Search name or brand"
-                  placeholderTextColor={placeholderColor}
-                  value={searchQuery}
-                  onChangeText={setSearchQuery}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  clearButtonMode="while-editing"
-                  style={[
-                    styles.searchInput,
-                    {
-                      color: textColor,
-                      borderColor,
-                      backgroundColor: inputBackground,
-                    },
-                  ]}
+                <View style={styles.searchRow}>
+                  <View
+                    style={[
+                      styles.searchInputWrap,
+                      { borderColor, backgroundColor: inputBackground },
+                    ]}
+                  >
+                    <Ionicons
+                      name="search"
+                      size={16}
+                      color={placeholderColor}
+                      style={styles.searchIcon}
+                    />
+                    <TextInput
+                      accessibilityLabel="Search clothing by name or brand"
+                      placeholder="Search name or brand"
+                      placeholderTextColor={placeholderColor}
+                      value={searchQuery}
+                      onChangeText={setSearchQuery}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      clearButtonMode="while-editing"
+                      style={[styles.searchInput, { color: textColor }]}
+                    />
+                  </View>
+                  <Pressable
+                    onPress={() => setShowSortSheet(true)}
+                    style={({ pressed }) => [
+                      styles.sortBtn,
+                      { borderColor, backgroundColor: inputBackground },
+                      sortKey && styles.sortBtnActive,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Sort"
+                  >
+                    <Ionicons
+                      name="swap-vertical-outline"
+                      size={18}
+                      color={sortKey ? "#fff" : textColor}
+                    />
+                  </Pressable>
+                </View>
+                <CategoryFilterBar
+                  value={categoryFilter}
+                  onChange={setCategoryFilter}
                 />
                 {loadError ? (
                   <ThemedText style={styles.errorBanner}>
@@ -315,12 +392,19 @@ export default function ClosetScreen() {
                   }
                 >
                   <ThemedView style={styles.card}>
-                    <Image
-                      source={item.image}
-                      style={styles.image}
-                      contentFit="cover"
-                      cachePolicy="memory-disk"
-                    />
+                    <View style={styles.imageContainer}>
+                      <Image
+                        source={item.image}
+                        style={styles.image}
+                        contentFit="cover"
+                        cachePolicy="memory-disk"
+                      />
+                      <View style={styles.cpwBadge} pointerEvents="none">
+                        <ThemedText style={styles.cpwText}>
+                          {formatCurrency(costPerWear)}
+                        </ThemedText>
+                      </View>
+                    </View>
                     {isSelected && (
                       <>
                         <View
@@ -343,17 +427,6 @@ export default function ClosetScreen() {
                           .join(" | ")}
                       </ThemedText>
                       <View style={styles.nameWrap}>
-                        {/* <ThemedText
-                          numberOfLines={1}
-                          ellipsizeMode="clip"
-                          style={[
-                            styles.itemName,
-                            Platform.OS === "web" &&
-                              ({ textOverflow: "clip" } as object),
-                          ]}
-                        >
-                          {item.name}
-                        </ThemedText> */}
                         <LinearGradient
                           colors={[`${cardBackground}00`, cardBackground]}
                           start={{ x: 0, y: 0 }}
@@ -361,14 +434,6 @@ export default function ClosetScreen() {
                           style={styles.nameFade}
                           pointerEvents="none"
                         />
-                      </View>
-                      <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-                        <ThemedText>
-                          {formatCurrency(costPerWear)}
-                        </ThemedText>
-                        <ThemedText style={{ opacity: 0.45 }}>
-                          {` ($${item.cost}`+'/'+`${item.wears})`}
-                        </ThemedText>
                       </View>
                     </ThemedView>
                   </ThemedView>
@@ -509,6 +574,65 @@ export default function ClosetScreen() {
           </Pressable>
         )}
       </View>
+
+      <Modal
+        visible={showSortSheet}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowSortSheet(false)}
+      >
+        <Pressable
+          style={styles.sheetOverlay}
+          onPress={() => setShowSortSheet(false)}
+        >
+          <View style={styles.sheetContainer}>
+            <View style={styles.sheetHandle} />
+            <ThemedText type="defaultSemiBold" style={styles.sheetTitle}>
+              Sort by
+            </ThemedText>
+            {SORT_OPTIONS.map((opt) => {
+              const active = sortKey === opt.key;
+              return (
+                <Pressable
+                  key={opt.key}
+                  onPress={() => {
+                    setSortKey(active ? null : opt.key);
+                    setShowSortSheet(false);
+                  }}
+                  style={({ pressed }) => [
+                    styles.sheetOption,
+                    active && styles.sheetOptionActive,
+                    pressed && { opacity: 0.6 },
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                >
+                  <ThemedText
+                    style={[
+                      styles.sheetOptionText,
+                      active && styles.sheetOptionTextActive,
+                    ]}
+                  >
+                    {opt.label}
+                  </ThemedText>
+                  {active && (
+                    <Ionicons name="checkmark" size={18} color="#fff" />
+                  )}
+                </Pressable>
+              );
+            })}
+            <Pressable
+              onPress={() => setShowSortSheet(false)}
+              style={({ pressed }) => [
+                styles.sheetCancel,
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <ThemedText style={styles.sheetCancelText}>Cancel</ThemedText>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
     </ThemedView>
   );
 }
@@ -529,12 +653,97 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     gap: 8,
   },
-  searchInput: {
+  searchRow: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+  },
+  searchInputWrap: {
+    flex: 1,
     height: 40,
     borderWidth: 1,
     borderRadius: 10,
-    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    gap: 6,
+  },
+  searchIcon: {
+    flexShrink: 0,
+  },
+  searchInput: {
+    flex: 1,
     fontSize: 16,
+    paddingVertical: 0,
+  },
+  sortBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sortBtnActive: {
+    backgroundColor: "#000",
+    borderColor: "#000",
+  },
+  sheetOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    justifyContent: "flex-end",
+  },
+  sheetContainer: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingHorizontal: 16,
+    paddingBottom: 36,
+    paddingTop: 12,
+    gap: 6,
+  },
+  sheetHandle: {
+    alignSelf: "center",
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#ccc",
+    marginBottom: 8,
+  },
+  sheetTitle: {
+    fontSize: 15,
+    marginBottom: 4,
+    paddingHorizontal: 4,
+  },
+  sheetOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 13,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+  },
+  sheetOptionActive: {
+    backgroundColor: "#000",
+  },
+  sheetOptionText: {
+    fontSize: 15,
+  },
+  sheetOptionTextActive: {
+    color: "#fff",
+    fontWeight: "600",
+  },
+  sheetCancel: {
+    marginTop: 6,
+    height: 50,
+    borderRadius: 12,
+    backgroundColor: "#f2f2f7",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sheetCancelText: {
+    fontSize: 16,
+    fontWeight: "600",
   },
   loading: {
     marginTop: 48,
@@ -637,10 +846,44 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: "hidden",
   },
+  imageContainer: {
+    position: "relative",
+    width: "100%",
+  },
   image: {
     width: "100%",
     aspectRatio: 3 / 4,
     borderRadius: 12,
+  },
+  cpwBadge: {
+    position: "absolute",
+    bottom: 6,
+    left: 6,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    borderRadius: 6,
+    paddingHorizontal: 4,
+    paddingVertical: 0,
+  },
+  cpwText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "500",
+    letterSpacing: 0.2,
+  },
+  categoryBadge: {
+    position: "absolute",
+    top: 6,
+    left: 6,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    borderRadius: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+  },
+  categoryBadgeText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "600",
+    letterSpacing: 0.3,
   },
   cardContent: {
     paddingVertical: 6,

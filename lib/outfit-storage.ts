@@ -48,7 +48,9 @@ export async function draftPhotoExists(): Promise<boolean> {
   }
 }
 
-function normalizeOutfitsMap(raw: Record<string, unknown>): Record<string, DayOutfit[]> {
+function normalizeOutfitsMap(
+  raw: Record<string, unknown>,
+): Record<string, DayOutfit[]> {
   const out: Record<string, DayOutfit[]> = {};
   for (const [dateKey, val] of Object.entries(raw)) {
     if (val == null) continue;
@@ -63,7 +65,13 @@ function normalizeOutfitsMap(raw: Record<string, unknown>): Record<string, DayOu
       });
     } else if (typeof val === "object" && val !== null && "photoUri" in val) {
       const o = val as { photoUri: string; itemIds?: string[] };
-      out[dateKey] = [{ id: `${dateKey}-legacy`, photoUri: o.photoUri, itemIds: o.itemIds ?? [] }];
+      out[dateKey] = [
+        {
+          id: `${dateKey}-legacy`,
+          photoUri: o.photoUri,
+          itemIds: o.itemIds ?? [],
+        },
+      ];
     }
   }
   return out;
@@ -101,14 +109,18 @@ export async function saveOutfitForToday(itemIds: string[]): Promise<void> {
   await ensureOutfitsDirectory();
   const draft = getDraftPhotoUri();
   const draftInfo = await FileSystem.getInfoAsync(draft);
-  if (!draftInfo.exists) throw new Error("No draft photo. Take a picture first.");
+  if (!draftInfo.exists)
+    throw new Error("No draft photo. Take a picture first.");
   const entryId = `${dateKey}-${Date.now()}`;
   const finalUri = `${outfitsDir()}${entryId}.jpg`;
   await FileSystem.copyAsync({ from: draft, to: finalUri });
   await FileSystem.deleteAsync(draft, { idempotent: true });
   const outfits = await loadOutfits();
   const list = outfits[dateKey] ?? [];
-  outfits[dateKey] = [...list, { id: entryId, photoUri: finalUri, itemIds: [...itemIds] }];
+  outfits[dateKey] = [
+    ...list,
+    { id: entryId, photoUri: finalUri, itemIds: [...itemIds] },
+  ];
   await saveOutfits(outfits);
 }
 
@@ -120,11 +132,17 @@ export async function saveOutfitItemsOnly(
   const entryId = `${key}-${Date.now()}`;
   const outfits = await loadOutfits();
   const list = outfits[key] ?? [];
-  outfits[key] = [...list, { id: entryId, photoUri: "", itemIds: [...itemIds] }];
+  outfits[key] = [
+    ...list,
+    { id: entryId, photoUri: "", itemIds: [...itemIds] },
+  ];
   await saveOutfits(outfits);
 }
 
-export async function deleteOutfit(dateKey: string, outfitId: string): Promise<void> {
+export async function deleteOutfit(
+  dateKey: string,
+  outfitId: string,
+): Promise<void> {
   const outfits = await loadOutfits();
   const list = outfits[dateKey] ?? [];
   const removed = list.find((o) => o.id === outfitId);
@@ -139,7 +157,8 @@ export async function deleteOutfit(dateKey: string, outfitId: string): Promise<v
   if (removed.photoUri) {
     try {
       const info = await FileSystem.getInfoAsync(removed.photoUri);
-      if (info.exists) await FileSystem.deleteAsync(removed.photoUri, { idempotent: true });
+      if (info.exists)
+        await FileSystem.deleteAsync(removed.photoUri, { idempotent: true });
     } catch {
       // ignore missing file
     }
