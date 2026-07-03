@@ -151,7 +151,7 @@ export default function SelectOutfitItemsScreen() {
               onPress={() => toggle(item.id)}
               style={[styles.row, on && styles.rowSelected]}
             >
-              <Image source={item.image} style={styles.thumb} contentFit="cover" />
+              <Image source={item.image} style={styles.thumb} contentFit="contain" />
               <View style={styles.rowText}>
                 {item.brand.trim() ? (
                   <ThemedText numberOfLines={1} style={styles.rowBrand}>
@@ -233,6 +233,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 8,
+    backgroundColor: "rgba(128,128,128,0.15)",
   },
   rowText: {
     flex: 1,

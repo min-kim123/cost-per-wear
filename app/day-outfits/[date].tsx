@@ -32,19 +32,30 @@ import { getSupabase } from "@/supabase-client";
 type ItemData = {
   name: string;
   image: string | null;
+  cost: number;
+  wears: number;
 };
 
 async function loadItemData(): Promise<Record<string, ItemData>> {
   const { data } = await getSupabase()
     .from("closet")
-    .select("id, brand, name, image");
+    .select("id, brand, name, image, cost, wears");
   const map: Record<string, ItemData> = {};
   for (const row of data ?? []) {
     const brand = ((row.brand as string | null) ?? "").trim();
     const name = (row.name as string) ?? "";
+    const costRaw = row.cost as number | string | null;
+    const cost =
+      typeof costRaw === "string"
+        ? parseFloat(costRaw)
+        : typeof costRaw === "number"
+          ? costRaw
+          : 0;
     map[row.id as string] = {
       name: brand ? `${brand} · ${name}` : name,
       image: (row.image as string | null) ?? null,
+      cost: Number.isFinite(cost) && cost >= 0 ? cost : 0,
+      wears: typeof row.wears === "number" && row.wears >= 0 ? row.wears : 0,
     };
   }
   return map;
@@ -144,7 +155,21 @@ export default function DayOutfitsScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: dateKey }} />
+      <Stack.Screen
+        options={{
+          title: dateKey,
+          headerLeft: () => (
+            <Pressable
+              onPress={() => router.back()}
+              style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1, marginRight: 8 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Go back"
+            >
+              <Ionicons name="chevron-back" size={26} color="#000" />
+            </Pressable>
+          ),
+        }}
+      />
       <ThemedView style={styles.container}>
         <View style={styles.subtitleRow}>
           <ThemedText style={styles.subtitle}>
@@ -161,17 +186,42 @@ export default function DayOutfitsScreen() {
           renderItem={({ item, index }) => {
             const itemsWithData = item.itemIds.map((id) => ({
               id,
-              ...(itemData[id] ?? { name: id, image: null }),
+              ...(itemData[id] ?? { name: id, image: null, cost: 0, wears: 0 }),
             }));
 
+            const totalCPW = itemsWithData.reduce(
+              (sum, it) => sum + it.cost / Math.max(it.wears, 1),
+              0,
+            );
+
             return (
-              <View style={styles.card}>
+              <Pressable
+                onPress={() =>
+                  router.push({
+                    pathname: "/log-outfit",
+                    params: {
+                      date: dateKey,
+                      outfitId: item.id,
+                      itemIds: item.itemIds.join(","),
+                      photoUri: item.photoUri ?? "",
+                    },
+                  })
+                }
+                style={({ pressed }) => [styles.card, pressed && { opacity: 0.85 }]}
+                accessibilityRole="button"
+                accessibilityLabel={`Edit outfit ${index + 1}`}
+              >
                 <View style={styles.cardHeader}>
                   <ThemedText type="defaultSemiBold" style={styles.cardTitle}>
                     Outfit {index + 1}
                   </ThemedText>
+                  {itemsWithData.length > 0 && (
+                    <View style={styles.cpwBadge}>
+                      <Text style={styles.cpwText}>${totalCPW.toFixed(2)}/wear</Text>
+                    </View>
+                  )}
                   <Pressable
-                    onPress={() => confirmDelete(item)}
+                    onPress={(e) => { e.stopPropagation(); confirmDelete(item); }}
                     disabled={deletingId !== null}
                     style={styles.deleteBtn}
                     accessibilityLabel="Delete outfit"
@@ -269,7 +319,7 @@ export default function DayOutfitsScreen() {
                     No items selected
                   </ThemedText>
                 )}
-              </View>
+              </Pressable>
             );
           }}
           ListEmptyComponent={
@@ -347,6 +397,18 @@ const styles = StyleSheet.create({
   },
   cardTitle: {
     flex: 1,
+  },
+  cpwBadge: {
+    backgroundColor: "rgba(0,0,0,0.07)",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginRight: 6,
+  },
+  cpwText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#444",
   },
   deleteBtn: {
     padding: 6,

@@ -300,12 +300,10 @@ export default function DataScreen() {
       <ScrollView
         contentContainerStyle={[
           styles.scroll,
-          { paddingTop: insets.top + 20, paddingBottom: insets.bottom + 32 },
+          { paddingTop: 20, paddingBottom: insets.bottom + 32 },
         ]}
         showsVerticalScrollIndicator={false}
       >
-        <ThemedText style={styles.pageTitle}>Data</ThemedText>
-
         {loading ? (
           <ActivityIndicator style={styles.loader} />
         ) : (
@@ -358,11 +356,6 @@ export default function DataScreen() {
 const styles = StyleSheet.create({
   scroll: {
     paddingHorizontal: 18,
-  },
-  pageTitle: {
-    fontSize: 30,
-    fontWeight: "700",
-    marginBottom: 20,
   },
   loader: {
     marginTop: 60,

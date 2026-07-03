@@ -46,6 +46,14 @@
           "photosPermission": "Allow access to your photos to attach pictures to closet items.",
           "cameraPermission": "Allow the camera to take photos for closet items."
         }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow access to your photos to save closet item and outfit photos to your camera roll.",
+          "savePhotosPermission": "Allow saving closet item and outfit photos to your camera roll.",
+          "isAccessMediaLocationEnabled": false
+        }
       ]
     ],
     "experiments": {

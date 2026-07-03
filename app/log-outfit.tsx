@@ -1,8 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
-import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -18,10 +18,16 @@ import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
 import {
+  chunkPairs,
+  groupByCategory,
+  listCategories,
+  type CategoryRow,
+} from "@/lib/categories";
+import {
+  getOutfitsForDate,
   saveOutfitItemsOnly,
   saveOutfitWithPhoto,
   updateOutfit,
-  getOutfitsForDate,
   getTodayDateKey,
 } from "@/lib/outfit-storage";
 import { getSupabase } from "@/supabase-client";
@@ -31,37 +37,62 @@ type ClosetItem = {
   brand: string;
   name: string;
   imageUri: string | null;
+  cost: number;
+  wears: number;
+  category: string | null;
 };
+
+function parseItemIdsParam(param: string | string[] | undefined): string[] {
+  if (!param) return [];
+  const raw = Array.isArray(param) ? param.join(",") : param;
+  return raw.split(",").filter(Boolean);
+}
 
 async function loadItems(): Promise<ClosetItem[]> {
   const { data, error } = await getSupabase()
     .from("closet")
-    .select("id, brand, name, image")
+    .select("id, brand, name, image, cost, wears, category")
     .order("created_at", { ascending: false });
   if (error) throw new Error(error.message);
-  return (data ?? []).map((row) => ({
-    id: row.id as string,
-    brand: (row.brand as string | null) ?? "",
-    name: row.name as string,
-    imageUri: (row.image as string | null) ?? null,
-  }));
+  return (data ?? []).map((row) => {
+    const costRaw = row.cost;
+    const cost =
+      typeof costRaw === "string"
+        ? parseFloat(costRaw)
+        : typeof costRaw === "number"
+          ? costRaw
+          : 0;
+    return {
+      id: String(row.id),
+      brand: (row.brand as string | null) ?? "",
+      name: row.name as string,
+      imageUri: (row.image as string | null) ?? null,
+      cost: Number.isFinite(cost) && cost >= 0 ? cost : 0,
+      wears: typeof row.wears === "number" && row.wears >= 0 ? row.wears : 0,
+      category: (row.category as string | null) ?? null,
+    };
+  });
 }
 
 export default function LogOutfitScreen() {
   const router = useRouter();
-  const { date, outfitId } = useLocalSearchParams<{ date?: string; outfitId?: string }>();
+  const { date, outfitId, itemIds: itemIdsParam, photoUri: photoUriParam } =
+    useLocalSearchParams<{ date?: string; outfitId?: string; itemIds?: string; photoUri?: string }>();
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
 
   const isEditing = typeof outfitId === "string" && outfitId.length > 0;
 
   const [items, setItems] = useState<ClosetItem[]>([]);
+  const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const initialSelectedIdsRef = useRef<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
   const [outfitPhotoUri, setOutfitPhotoUri] = useState<string | null>(null);
   const [originalPhotoUri, setOriginalPhotoUri] = useState<string>("");
   const [picking, setPicking] = useState(false);
+  const [loadingOutfit, setLoadingOutfit] = useState(isEditing);
 
   const textColor = useThemeColor({}, "text");
   const cardBackground = useThemeColor(
@@ -74,31 +105,77 @@ export default function LogOutfitScreen() {
 
   const cardWidth = (windowWidth - 24 - 24) / 3;
 
+  const dateKey = typeof date === "string" && date ? date : getTodayDateKey();
+
+  // Load existing outfit when editing (Supabase is source of truth; URL params are fallback)
   useEffect(() => {
-    const dateKey = typeof date === "string" && date ? date : getTodayDateKey();
-    const promises: Promise<void>[] = [
+    if (!isEditing || typeof outfitId !== "string") {
+      setLoadingOutfit(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingOutfit(true);
+
+    (async () => {
+      try {
+        const outfits = await getOutfitsForDate(dateKey);
+        const outfit = outfits.find((o) => o.id === outfitId);
+        if (cancelled) return;
+
+        if (outfit) {
+          const ids = outfit.itemIds;
+          const idSet = new Set(ids);
+          initialSelectedIdsRef.current = idSet;
+          setSelectedIds(idSet);
+          setOutfitPhotoUri(outfit.photoUri || null);
+          setOriginalPhotoUri(outfit.photoUri ?? "");
+          return;
+        }
+      } catch {
+        // fall through to URL params
+      }
+
+      if (cancelled) return;
+      const fromParams = parseItemIdsParam(itemIdsParam);
+      if (fromParams.length > 0) {
+        const idSet = new Set(fromParams);
+        initialSelectedIdsRef.current = idSet;
+        setSelectedIds(idSet);
+      }
+      const photo =
+        typeof photoUriParam === "string" ? photoUriParam : "";
+      if (photo) {
+        setOutfitPhotoUri(photo);
+        setOriginalPhotoUri(photo);
+      }
+    })().finally(() => {
+      if (!cancelled) setLoadingOutfit(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isEditing, outfitId, dateKey, itemIdsParam, photoUriParam]);
+
+  useFocusEffect(
+    useCallback(() => {
       loadItems()
         .then(setItems)
         .catch((e) =>
           Alert.alert("Error", e instanceof Error ? e.message : "Could not load closet"),
-        ),
-    ];
-    // If editing, pre-populate state from stored outfit
-    if (isEditing) {
-      promises.push(
-        getOutfitsForDate(dateKey).then((outfits) => {
-          const outfit = outfits.find((o) => o.id === outfitId);
-          if (outfit) {
-            setSelectedIds(new Set(outfit.itemIds));
-            const uri = outfit.photoUri || null;
-            setOutfitPhotoUri(uri);
-            setOriginalPhotoUri(outfit.photoUri ?? "");
-          }
-        }).catch(() => {}),
-      );
-    }
-    Promise.all(promises).finally(() => setLoading(false));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+        )
+        .finally(() => setLoading(false));
+      listCategories()
+        .then(setCategories)
+        .catch(() => setCategories([]));
+    }, []),
+  );
+
+  const sections = useMemo(
+    () => groupByCategory(items, categories),
+    [items, categories],
+  );
 
   function toggleItem(id: string) {
     setSelectedIds((prev) => {
@@ -139,6 +216,19 @@ export default function LogOutfitScreen() {
     }
   }
 
+  async function adjustWears(ids: string[], delta: 1 | -1) {
+    if (ids.length === 0) return;
+    const supabase = getSupabase();
+    const { data: rows } = await supabase
+      .from("closet")
+      .select("id, wears")
+      .in("id", ids);
+    for (const row of rows ?? []) {
+      const newWears = Math.max(0, ((row.wears as number) ?? 0) + delta);
+      await supabase.from("closet").update({ wears: newWears }).eq("id", row.id);
+    }
+  }
+
   async function save() {
     if (selectedIds.size === 0) {
       Alert.alert("No items selected", "Tap items you wore today.");
@@ -147,10 +237,30 @@ export default function LogOutfitScreen() {
     setSaving(true);
     try {
       const targetDate = typeof date === "string" && date ? date : undefined;
-      if (outfitPhotoUri) {
-        await saveOutfitWithPhoto(Array.from(selectedIds), outfitPhotoUri, targetDate);
+      const newIds = Array.from(selectedIds);
+
+      if (isEditing) {
+        const originalIds = initialSelectedIdsRef.current;
+        const added = newIds.filter((id) => !originalIds.has(id));
+        const removed = [...originalIds].filter((id) => !selectedIds.has(id));
+        await Promise.all([
+          adjustWears(added, 1),
+          adjustWears(removed, -1),
+        ]);
+        await updateOutfit(
+          dateKey,
+          outfitId as string,
+          newIds,
+          outfitPhotoUri,
+          originalPhotoUri,
+        );
       } else {
-        await saveOutfitItemsOnly(Array.from(selectedIds), targetDate);
+        await adjustWears(newIds, 1);
+        if (outfitPhotoUri) {
+          await saveOutfitWithPhoto(newIds, outfitPhotoUri, targetDate);
+        } else {
+          await saveOutfitItemsOnly(newIds, targetDate);
+        }
       }
       router.back();
     } catch (e) {
@@ -160,13 +270,78 @@ export default function LogOutfitScreen() {
     }
   }
 
-  const dateKey = typeof date === "string" && date ? date : getTodayDateKey();
+  const selectedKey = Array.from(selectedIds).sort().join(",");
+
+  function renderItemCard(item: ClosetItem, extraStyle?: { marginTop?: number; marginBottom?: number }) {
+    const isSelected = selectedIds.has(item.id);
+    const cpw = item.cost / Math.max(item.wears, 1);
+    return (
+      <Pressable
+        onPress={() => toggleItem(item.id)}
+        style={({ pressed }) => [
+          styles.cardPressable,
+          { width: cardWidth },
+          extraStyle,
+          pressed && { opacity: 0.75 },
+        ]}
+        accessibilityRole="checkbox"
+        accessibilityLabel={item.name}
+        accessibilityState={{ checked: isSelected }}
+      >
+        <ThemedView style={[styles.card, isSelected && styles.cardSelected]}>
+          {item.imageUri ? (
+            <Image
+              source={{ uri: item.imageUri }}
+              style={styles.image}
+              contentFit="contain"
+            />
+          ) : (
+            <View style={[styles.image, styles.imagePlaceholder]}>
+              <Ionicons
+                name="shirt-outline"
+                size={28}
+                color="rgba(128,128,128,0.5)"
+              />
+            </View>
+          )}
+
+          {isSelected && (
+            <>
+              <View style={styles.selectedBorder} pointerEvents="none" />
+              <View style={styles.selectedOverlay}>
+                <Ionicons name="checkmark-circle" size={28} color="#fff" />
+              </View>
+            </>
+          )}
+
+          <View style={styles.cardLabel}>
+            <ThemedText numberOfLines={1} style={styles.itemBrand}>
+              {item.brand || " "}
+            </ThemedText>
+            <ThemedText numberOfLines={1} style={styles.itemName}>
+              {item.name}
+            </ThemedText>
+            <ThemedText style={styles.itemCpw}>
+              ${cpw.toFixed(2)}/wear
+            </ThemedText>
+            <ThemedText style={styles.itemCost}>
+              ${item.cost.toFixed(0)} total
+            </ThemedText>
+          </View>
+        </ThemedView>
+      </Pressable>
+    );
+  }
 
   return (
     <ThemedView style={styles.container}>
       <Stack.Screen
         options={{
-          title: typeof date === "string" && date ? `Outfit for ${date}` : "Today's Outfit",
+          title: isEditing
+            ? "Edit outfit"
+            : typeof date === "string" && date
+              ? `Outfit for ${date}`
+              : "Today's Outfit",
           headerLeft: () => (
             <Pressable
               onPress={() => router.back()}
@@ -237,73 +412,57 @@ export default function LogOutfitScreen() {
         </View>
       </View>
 
-      {loading ? (
+      {loading || loadingOutfit ? (
         <ActivityIndicator style={styles.loader} size="large" />
       ) : (
         <FlatList
-          data={items}
-          keyExtractor={(item) => item.id}
-          numColumns={3}
+          data={sections}
+          keyExtractor={(section) => section.key}
+          extraData={selectedKey}
+          ItemSeparatorComponent={() => <View style={styles.sectionDivider} />}
           contentContainerStyle={[
             styles.grid,
             { paddingBottom: insets.bottom + 20 },
           ]}
-          renderItem={({ item }) => {
-            const isSelected = selectedIds.has(item.id);
+          renderItem={({ item: section }) => {
+            const isTwoRow = section.key === "top";
             return (
-              <Pressable
-                onPress={() => toggleItem(item.id)}
-                style={({ pressed }) => [
-                  styles.cardPressable,
-                  { width: cardWidth },
-                  pressed && { opacity: 0.75 },
-                ]}
-                accessibilityRole="checkbox"
-                accessibilityLabel={item.name}
-                accessibilityState={{ checked: isSelected }}
-              >
-                <ThemedView
-                  style={[styles.card, isSelected && styles.cardSelected]}
-                >
-                  {item.imageUri ? (
-                    <Image
-                      source={{ uri: item.imageUri }}
-                      style={styles.image}
-                      contentFit="cover"
-                    />
-                  ) : (
-                    <View style={[styles.image, styles.imagePlaceholder]}>
-                      <Ionicons
-                        name="shirt-outline"
-                        size={28}
-                        color="rgba(128,128,128,0.5)"
-                      />
-                    </View>
-                  )}
-
-                  {isSelected && (
-                    <>
-                      <View style={styles.selectedBorder} pointerEvents="none" />
-                      <View style={styles.selectedOverlay}>
-                        <Ionicons
-                          name="checkmark-circle"
-                          size={28}
-                          color="#fff"
-                        />
+              <View style={styles.sectionContainer}>
+                <ThemedText style={styles.sectionTitle}>
+                  {section.label}{" "}
+                  <ThemedText style={styles.sectionCount}>
+                    {section.items.length}
+                  </ThemedText>
+                </ThemedText>
+                {isTwoRow ? (
+                  <FlatList
+                    data={chunkPairs(section.items)}
+                    keyExtractor={(pair) => pair[0].id}
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.sectionRow}
+                    renderItem={({ item: pair }) => (
+                      <View style={styles.columnPair}>
+                        {renderItemCard(pair[0], { marginBottom: 0 })}
+                        {pair[1] ? (
+                          renderItemCard(pair[1], { marginTop: 0 })
+                        ) : (
+                          <View style={{ width: cardWidth }} />
+                        )}
                       </View>
-                    </>
-                  )}
-
-                  <View style={styles.cardLabel}>
-                    <ThemedText numberOfLines={1} style={styles.itemBrand}>
-                      {item.brand || " "}
-                    </ThemedText>
-                    <ThemedText numberOfLines={1} style={styles.itemName}>
-                      {item.name}
-                    </ThemedText>
-                  </View>
-                </ThemedView>
-              </Pressable>
+                    )}
+                  />
+                ) : (
+                  <FlatList
+                    data={section.items}
+                    keyExtractor={(item) => item.id}
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.sectionRow}
+                    renderItem={({ item }) => renderItemCard(item)}
+                  />
+                )}
+              </View>
             );
           }}
           ListEmptyComponent={
@@ -336,12 +495,28 @@ export default function LogOutfitScreen() {
               <ActivityIndicator color="#fff" />
             ) : (
               <ThemedText style={styles.saveBtnText} lightColor="#fff" darkColor="#fff">
-                Save outfit ({selectedIds.size} item{selectedIds.size !== 1 ? "s" : ""})
+                {isEditing
+                  ? "Save changes"
+                  : `Save outfit (${selectedIds.size} item${selectedIds.size !== 1 ? "s" : ""})`}
               </ThemedText>
             )}
           </Pressable>
         </View>
       )}
+
+      {/* FAB to add a new closet item without leaving the outfit flow */}
+      <Pressable
+        onPress={() => router.push("/add-closet-item")}
+        style={({ pressed }) => [
+          styles.addItemFab,
+          { bottom: insets.bottom + (selectedIds.size > 0 ? 88 : 20) },
+          pressed && { opacity: 0.8 },
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel="Add new closet item"
+      >
+        <Ionicons name="add" size={26} color="#fff" />
+      </Pressable>
     </ThemedView>
   );
 }
@@ -415,6 +590,28 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     flexGrow: 1,
   },
+  sectionContainer: {
+    marginBottom: 3,
+  },
+  sectionTitle: {
+    fontSize: 15,
+    marginBottom: 4,
+  },
+  sectionCount: {
+    fontSize: 15,
+    color: "#8E8E93",
+  },
+  sectionRow: {
+    paddingRight: 8,
+  },
+  sectionDivider: {
+    height: 1,
+    backgroundColor: "rgba(128,128,128,0.45)",
+    marginVertical: 6,
+  },
+  columnPair: {
+    flexDirection: "column",
+  },
   cardPressable: { margin: 4 },
   card: {
     borderRadius: 12,
@@ -460,6 +657,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: "center",
   },
+  itemCpw: {
+    fontSize: 10,
+    fontWeight: "600",
+    textAlign: "center",
+    marginTop: 1,
+  },
+  itemCost: {
+    fontSize: 10,
+    opacity: 0.45,
+    textAlign: "center",
+  },
   empty: {
     textAlign: "center",
     marginTop: 40,
@@ -489,5 +697,15 @@ const styles = StyleSheet.create({
   saveBtnText: {
     fontSize: 16,
     fontWeight: "700",
+  },
+  addItemFab: {
+    position: "absolute",
+    right: 16,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "#000",
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

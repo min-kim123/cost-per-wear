@@ -12,11 +12,13 @@ import ClosetScreen from "./closet";
 import DataScreen from "./data";
 import HomeScreen from "./index";
 import SettingsScreen from "./settings";
+import ShoppingScreen from "./shopping";
 
 const routes = [
   { key: "calendar", title: "Calendar" },
   { key: "index", title: "Home" },
   { key: "closet", title: "Closet" },
+  { key: "shopping", title: "Shopping" },
   { key: "data", title: "Data" },
   { key: "settings", title: "Settings" },
 ] as const;
@@ -27,6 +29,7 @@ const ICONS: Record<RouteKey, { default: string; active: string }> = {
   calendar: { default: "calendar-outline", active: "calendar" },
   index: { default: "camera-outline", active: "camera" },
   closet: { default: "shirt-outline", active: "shirt" },
+  shopping: { default: "bag-outline", active: "bag" },
   data: { default: "bar-chart-outline", active: "bar-chart" },
   settings: { default: "settings-outline", active: "settings" },
 };
@@ -35,6 +38,7 @@ const renderScene = SceneMap({
   calendar: CalendarScreen,
   index: HomeScreen,
   closet: ClosetScreen,
+  shopping: ShoppingScreen,
   data: DataScreen,
   settings: SettingsScreen,
 });

@@ -7,22 +7,25 @@ import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
+  Keyboard,
   Modal,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   TextInput,
   View,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
 
 import { BrandInput } from "@/components/brand-input";
 import { CategoryPicker, type Category } from "@/components/category-picker";
+import { PasteImageButton } from "@/components/paste-image-button";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
+import { listCategories } from "@/lib/categories";
+import { writeClipboardImageToLocalUri } from "@/lib/clipboard-image";
+import { onImageCaptured } from "@/lib/image-capture-bridge";
 import { getSupabase } from "@/supabase-client";
 
 const PICKER_OPTIONS: ImagePicker.ImagePickerOptions = {
@@ -41,6 +44,7 @@ export default function EditClosetItemScreen() {
   const [costText, setCostText] = useState("");
   const [wearsText, setWearsText] = useState("");
   const [category, setCategory] = useState<Category | null>(null);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [existingImageUrl, setExistingImageUrl] = useState<string | null>(null);
   const [pickedUri, setPickedUri] = useState<string | null>(null);
   const [imageCleared, setImageCleared] = useState(false);
@@ -57,11 +61,6 @@ export default function EditClosetItemScreen() {
   const placeholderColor = useThemeColor({ light: "#8E8E93" }, "icon");
   const borderColor = useThemeColor({ light: "#C6C6C8" }, "icon");
   const inputBackground = useThemeColor({ light: "#EFEFF4" }, "background");
-
-  const inputStyle = [
-    styles.input,
-    { color: textColor, borderColor, backgroundColor: inputBackground },
-  ];
 
   useEffect(() => {
     if (!id) return;
@@ -87,6 +86,20 @@ export default function EditClosetItemScreen() {
       })
       .finally(() => setLoadingItem(false));
   }, [id, router]);
+
+  useEffect(() => {
+    listCategories()
+      .then((rows) => setCategories(rows.map((r) => r.name)))
+      .catch(() => setCategories([]));
+  }, []);
+
+  // Picks up the image captured on the web-capture or crop-image screen when it navigates back to us
+  useEffect(() => {
+    return onImageCaptured((uri) => {
+      setPickedUri(uri);
+      setImageCleared(false);
+    });
+  }, []);
 
   const runPicker = async (mode: "camera" | "library") => {
     if (picking || saving) return;
@@ -133,6 +146,12 @@ export default function EditClosetItemScreen() {
   const clearImage = () => {
     setPickedUri(null);
     setImageCleared(true);
+  };
+
+  const pasteImage = async (data: string) => {
+    const uri = await writeClipboardImageToLocalUri(data);
+    setPickedUri(uri);
+    setImageCleared(false);
   };
 
   const onSave = async () => {
@@ -207,9 +226,13 @@ export default function EditClosetItemScreen() {
     }
   };
 
-  const insets = useSafeAreaInsets();
   const displayUri = pickedUri ?? (imageCleared ? null : existingImageUrl);
   const busy = saving || deleting || picking;
+
+  const inputCompact = [
+    styles.inputCompact,
+    { color: textColor, borderColor, backgroundColor: inputBackground },
+  ];
 
   if (loadingItem) {
     return (
@@ -220,9 +243,12 @@ export default function EditClosetItemScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
+    <KeyboardAwareScrollView
       style={styles.flex}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      keyboardShouldPersistTaps="handled"
+      contentContainerStyle={styles.scrollContent}
+      enableOnAndroid
+      extraScrollHeight={Platform.OS === "ios" ? 20 : 80}
     >
       <Stack.Screen
         options={{
@@ -254,67 +280,37 @@ export default function EditClosetItemScreen() {
             <View style={styles.menuHandle} />
 
             <Pressable
-              style={({ pressed }) => [
-                styles.menuItem,
-                pressed && styles.menuItemPressed,
-              ]}
-              onPress={() => {
-                setShowMenu(false);
-                Alert.alert("Coming soon", "Archive is not yet available.");
-              }}
+              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed]}
+              onPress={() => { setShowMenu(false); Alert.alert("Coming soon", "Archive is not yet available."); }}
             >
               <Ionicons name="archive-outline" size={22} color="#888" />
-              <ThemedText style={[styles.menuItemText, { color: "#888" }]}>
-                Archive
-              </ThemedText>
+              <ThemedText style={[styles.menuItemText, { color: "#888" }]}>Archive</ThemedText>
               <ThemedText style={styles.menuItemBadge}>Soon</ThemedText>
             </Pressable>
 
             <View style={styles.menuDivider} />
 
             <Pressable
-              style={({ pressed }) => [
-                styles.menuItem,
-                pressed && styles.menuItemPressed,
-              ]}
-              onPress={() => {
-                setShowMenu(false);
-                Alert.alert(
-                  "Coming soon",
-                  "Sell on Depop is not yet available.",
-                );
-              }}
+              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed]}
+              onPress={() => { setShowMenu(false); Alert.alert("Coming soon", "Sell on Depop is not yet available."); }}
             >
               <Ionicons name="pricetag-outline" size={22} color="#888" />
-              <ThemedText style={[styles.menuItemText, { color: "#888" }]}>
-                Sell on Depop
-              </ThemedText>
+              <ThemedText style={[styles.menuItemText, { color: "#888" }]}>Sell on Depop</ThemedText>
               <ThemedText style={styles.menuItemBadge}>Soon</ThemedText>
             </Pressable>
 
             <View style={styles.menuDivider} />
 
             <Pressable
-              style={({ pressed }) => [
-                styles.menuItem,
-                pressed && styles.menuItemPressed,
-              ]}
-              onPress={() => {
-                setShowMenu(false);
-                setConfirmingDelete(true);
-              }}
+              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed]}
+              onPress={() => { setShowMenu(false); setConfirmingDelete(true); }}
             >
               <Ionicons name="trash-outline" size={22} color="#C00" />
-              <ThemedText style={[styles.menuItemText, { color: "#C00" }]}>
-                Delete
-              </ThemedText>
+              <ThemedText style={[styles.menuItemText, { color: "#C00" }]}>Delete</ThemedText>
             </Pressable>
 
             <Pressable
-              style={({ pressed }) => [
-                styles.menuCancel,
-                pressed && { opacity: 0.7 },
-              ]}
+              style={({ pressed }) => [styles.menuCancel, pressed && { opacity: 0.7 }]}
               onPress={() => setShowMenu(false)}
             >
               <ThemedText style={styles.menuCancelText}>Cancel</ThemedText>
@@ -322,158 +318,164 @@ export default function EditClosetItemScreen() {
           </View>
         </Pressable>
       </Modal>
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={styles.scrollContent}
-      >
-        <ThemedView style={styles.container}>
-          <ThemedText type="defaultSemiBold" style={styles.label}>
-            Photo
-          </ThemedText>
-          <View style={[styles.previewWrap, { borderColor }]}>
-            {displayUri ? (
-              <Image
-                source={{ uri: displayUri }}
-                style={styles.previewImage}
-                contentFit="cover"
-              />
-            ) : (
-              <View style={styles.previewPlaceholder}>
-                <Ionicons
-                  name="image-outline"
-                  size={40}
-                  color={placeholderColor}
+
+      <ThemedView style={styles.page}>
+        {/* ── Image + fields row ─────────────────────────────────── */}
+        <View style={styles.mainRow}>
+          {/* Image column */}
+          <View style={styles.imageCol}>
+            <View>
+              {displayUri ? (
+                <Image
+                  source={{ uri: displayUri }}
+                  style={styles.preview}
+                  contentFit="contain"
                 />
-                <ThemedText style={[styles.previewHint, { opacity: 0.65 }]}>
-                  Use Camera or Library below (optional)
-                </ThemedText>
-              </View>
-            )}
+              ) : (
+                <View style={[styles.preview, styles.previewPlaceholder, { borderColor }]}>
+                  <Ionicons name="image-outline" size={32} color={placeholderColor} />
+                </View>
+              )}
+              {displayUri ? (
+                <Pressable
+                  onPress={() =>
+                    router.push({
+                      pathname: "/crop-image",
+                      params: { uri: displayUri, returnTo: "edit", id },
+                    })
+                  }
+                  disabled={busy}
+                  style={styles.editImageBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="Edit photo"
+                >
+                  <Ionicons name="pencil" size={14} color="#fff" />
+                </Pressable>
+              ) : null}
+            </View>
+            <View style={styles.imageActions}>
+              <Pressable
+                onPress={() => runPicker("camera")}
+                disabled={busy}
+                style={[styles.imageBtn, { borderColor, backgroundColor: inputBackground }]}
+              >
+                <Ionicons name="camera-outline" size={16} color={textColor} />
+              </Pressable>
+              <Pressable
+                onPress={() => runPicker("library")}
+                disabled={busy}
+                style={[styles.imageBtn, { borderColor, backgroundColor: inputBackground }]}
+              >
+                <Ionicons name="images-outline" size={16} color={textColor} />
+              </Pressable>
+              <Pressable
+                onPress={() =>
+                  router.push({
+                    pathname: "/web-capture",
+                    params: { returnTo: "edit", id },
+                  })
+                }
+                disabled={busy}
+                style={[styles.imageBtn, { borderColor, backgroundColor: inputBackground }]}
+                accessibilityRole="button"
+                accessibilityLabel="Capture image from the web"
+              >
+                <Ionicons name="globe-outline" size={16} color={textColor} />
+              </Pressable>
+              <PasteImageButton
+                size={{ width: 32, height: 32 }}
+                style={{ borderWidth: 1, borderColor }}
+                backgroundColor={inputBackground}
+                foregroundColor={textColor}
+                cornerStyle="small"
+                displayMode="iconOnly"
+                disabled={busy}
+                accessibilityLabel="Paste image from clipboard"
+                onImage={pasteImage}
+              >
+                <Ionicons name="clipboard-outline" size={16} color={textColor} />
+              </PasteImageButton>
+              {displayUri ? (
+                <Pressable
+                  onPress={clearImage}
+                  disabled={busy}
+                  style={[styles.imageBtn, { borderColor, backgroundColor: inputBackground }]}
+                >
+                  <Ionicons name="close-outline" size={16} color="#C00" />
+                </Pressable>
+              ) : null}
+            </View>
           </View>
 
-          <View style={styles.photoActions}>
-            <Pressable
-              onPress={() => runPicker("camera")}
-              disabled={busy}
-              style={({ pressed }) => [
-                styles.photoBtn,
-                { borderColor, backgroundColor: inputBackground },
-                pressed && styles.photoBtnPressed,
-                busy && styles.photoBtnDisabled,
-              ]}
-            >
-              <Ionicons name="camera-outline" size={22} color={textColor} />
-              <ThemedText style={styles.photoBtnLabel}>Camera</ThemedText>
-            </Pressable>
-            <Pressable
-              onPress={() => runPicker("library")}
-              disabled={busy}
-              style={({ pressed }) => [
-                styles.photoBtn,
-                { borderColor, backgroundColor: inputBackground },
-                pressed && styles.photoBtnPressed,
-                busy && styles.photoBtnDisabled,
-              ]}
-            >
-              <Ionicons name="images-outline" size={22} color={textColor} />
-              <ThemedText style={styles.photoBtnLabel}>Library</ThemedText>
-            </Pressable>
+          {/* Fields column */}
+          <View style={styles.fieldsCol}>
+            <BrandInput value={brand} onChange={setBrand} editable={!busy} />
+            <TextInput
+              accessibilityLabel="Item name"
+              placeholder="Name *"
+              placeholderTextColor={placeholderColor}
+              value={name}
+              onChangeText={setName}
+              style={inputCompact}
+              editable={!busy}
+              returnKeyType="next"
+            />
+            <TextInput
+              accessibilityLabel="Item cost in dollars"
+              placeholder="Cost ($)"
+              placeholderTextColor={placeholderColor}
+              value={costText}
+              onChangeText={setCostText}
+              keyboardType="decimal-pad"
+              style={inputCompact}
+              editable={!busy}
+              returnKeyType="next"
+            />
+            <TextInput
+              accessibilityLabel="Number of times worn"
+              placeholder="Prev. wears"
+              placeholderTextColor={placeholderColor}
+              value={wearsText}
+              onChangeText={(v) => setWearsText(v.replace(/[^0-9]/g, ""))}
+              keyboardType="number-pad"
+              style={inputCompact}
+              editable={!busy}
+              returnKeyType="done"
+              onSubmitEditing={Keyboard.dismiss}
+            />
           </View>
+        </View>
 
-          {displayUri ? (
-            <Pressable
-              onPress={clearImage}
-              disabled={busy}
-              style={styles.clearPhoto}
-            >
-              <ThemedText type="link" style={styles.clearPhotoText}>
-                Remove photo
-              </ThemedText>
-            </Pressable>
-          ) : null}
+        {/* ── Category ──────────────────────────────────────────── */}
+        <ThemedText style={styles.categoryLabel}>Category</ThemedText>
+        <CategoryPicker
+          value={category}
+          onChange={setCategory}
+          categories={categories}
+          nullable
+          disabled={busy}
+        />
 
-          {createdAt ? (
-            <ThemedText style={styles.addedOn}>
-              Added{" "}
-              {new Date(createdAt).toLocaleDateString(undefined, {
-                year: "numeric",
-                month: "long",
-                day: "numeric",
-              })}
-            </ThemedText>
-          ) : null}
-
-          <ThemedText type="defaultSemiBold" style={styles.label}>
-            Category
+        {/* ── Meta ──────────────────────────────────────────────── */}
+        {createdAt ? (
+          <ThemedText style={styles.addedOn}>
+            Added{" "}
+            {new Date(createdAt).toLocaleDateString(undefined, {
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+            })}
           </ThemedText>
-          <CategoryPicker
-            value={category}
-            onChange={setCategory}
-            nullable
-            disabled={busy}
-          />
+        ) : null}
 
-          <ThemedText type="defaultSemiBold" style={styles.label}>
-            Brand
-          </ThemedText>
-          <BrandInput value={brand} onChange={setBrand} editable={!busy} />
-
-          <ThemedText type="defaultSemiBold" style={styles.label}>
-            Name
-          </ThemedText>
-          <TextInput
-            accessibilityLabel="Item name"
-            placeholder="e.g. Navy chinos"
-            placeholderTextColor={placeholderColor}
-            value={name}
-            onChangeText={setName}
-            style={inputStyle}
-            editable={!busy}
-          />
-
-          <ThemedText type="defaultSemiBold" style={styles.label}>
-            Cost ($)
-          </ThemedText>
-          <TextInput
-            accessibilityLabel="Item cost in dollars"
-            placeholder="0"
-            placeholderTextColor={placeholderColor}
-            value={costText}
-            onChangeText={setCostText}
-            keyboardType="decimal-pad"
-            style={inputStyle}
-            editable={!busy}
-          />
-
-          <ThemedText type="defaultSemiBold" style={styles.label}>
-            Wears
-          </ThemedText>
-          <TextInput
-            accessibilityLabel="Number of times worn"
-            placeholder="0"
-            placeholderTextColor={placeholderColor}
-            value={wearsText}
-            onChangeText={(v) => setWearsText(v.replace(/[^0-9]/g, ""))}
-            keyboardType="number-pad"
-            style={inputStyle}
-            editable={!busy}
-          />
-        </ThemedView>
-      </ScrollView>
-
-      <ThemedView
-        style={[
-          styles.footer,
-          { paddingBottom: insets.bottom + 12, borderColor },
-        ]}
-      >
+        {/* ── Save button ───────────────────────────────────────── */}
         <Pressable
           onPress={onSave}
           disabled={busy}
           style={({ pressed }) => [
             styles.saveBtn,
-            pressed && styles.saveBtnPressed,
-            busy && styles.saveBtnDisabled,
+            pressed && { opacity: 0.85 },
+            busy && { opacity: 0.6 },
           ]}
           accessibilityRole="button"
           accessibilityLabel="Save"
@@ -481,54 +483,40 @@ export default function EditClosetItemScreen() {
           {saving ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <ThemedText
-              style={styles.saveBtnText}
-              lightColor="#fff"
-              darkColor="#fff"
-            >
+            <ThemedText style={styles.saveBtnText} lightColor="#fff" darkColor="#fff">
               Save
             </ThemedText>
           )}
         </Pressable>
 
+        {/* ── Delete confirm ────────────────────────────────────── */}
         {confirmingDelete ? (
-          <View style={styles.confirmRow}>
-            <ThemedText style={styles.confirmText}>
-              Permanently delete this item?
-            </ThemedText>
+          <View style={[styles.confirmRow, { borderColor: "#C00" }]}>
+            <ThemedText style={styles.confirmText}>Permanently delete this item?</ThemedText>
             <View style={styles.confirmButtons}>
               <Pressable
                 onPress={() => setConfirmingDelete(false)}
                 disabled={deleting}
-                style={({ pressed }) => [
-                  styles.confirmCancel,
-                  { borderColor },
-                  pressed && styles.photoBtnPressed,
-                ]}
+                style={[styles.confirmCancel, { borderColor }]}
               >
                 <ThemedText style={styles.confirmCancelText}>Cancel</ThemedText>
               </Pressable>
               <Pressable
                 onPress={confirmDelete}
                 disabled={deleting}
-                style={({ pressed }) => [
-                  styles.confirmDeleteBtn,
-                  pressed && styles.deleteBtnPressed,
-                ]}
+                style={({ pressed }) => [styles.confirmDeleteBtn, pressed && { opacity: 0.7 }]}
               >
                 {deleting ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <ThemedText style={styles.confirmDeleteText}>
-                    Delete
-                  </ThemedText>
+                  <ThemedText style={styles.confirmDeleteText}>Delete</ThemedText>
                 )}
               </Pressable>
             </View>
           </View>
         ) : null}
       </ThemedView>
-    </KeyboardAvoidingView>
+    </KeyboardAwareScrollView>
   );
 }
 
@@ -536,84 +524,87 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   centered: { flex: 1, alignItems: "center", justifyContent: "center" },
   scrollContent: { flexGrow: 1 },
-  container: { flex: 1, padding: 20, paddingBottom: 16, gap: 8 },
-  footer: {
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    gap: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  label: { marginTop: 12 },
-  addedOn: { fontSize: 13, opacity: 0.5, marginTop: 4 },
-  previewWrap: {
-    marginTop: 4,
-    borderWidth: 1,
-    borderRadius: 12,
-    overflow: "hidden",
+
+  // ── Page ──────────────────────────────────────────────────────────
+  page: { flex: 1, padding: 16, paddingBottom: 28, gap: 10 },
+
+  // ── Main row: image left, fields right ────────────────────────────
+  mainRow: { flexDirection: "row", gap: 12, alignItems: "flex-start" },
+
+  imageCol: { gap: 6 },
+  preview: {
+    width: 110,
     aspectRatio: 3 / 4,
-    maxHeight: 220,
-    alignSelf: "center",
-    width: "100%",
+    borderRadius: 10,
+    backgroundColor: "rgba(128,128,128,0.15)",
+    flexShrink: 0,
   },
-  previewImage: { width: "100%", height: "100%" },
   previewPlaceholder: {
-    flex: 1,
+    borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
-    padding: 16,
-    gap: 8,
   },
-  previewHint: { fontSize: 14, textAlign: "center" },
-  photoActions: { flexDirection: "row", gap: 10, marginTop: 10 },
-  photoBtn: {
-    flex: 1,
-    flexDirection: "row",
+  editImageBtn: {
+    position: "absolute",
+    right: 6,
+    bottom: 6,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "rgba(0,0,0,0.65)",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    height: 46,
-    borderRadius: 10,
-    borderWidth: 1,
   },
-  photoBtnLabel: { fontSize: 15, fontWeight: "600" },
-  photoBtnPressed: { opacity: 0.85 },
-  photoBtnDisabled: { opacity: 0.5 },
-  clearPhoto: { alignSelf: "center", marginTop: 6, paddingVertical: 4 },
-  clearPhotoText: { fontSize: 15 },
-  input: {
-    height: 44,
+  imageActions: { flexDirection: "row", gap: 6, justifyContent: "center" },
+  imageBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  fieldsCol: { flex: 1, gap: 8 },
+  inputCompact: {
+    height: 38,
     borderWidth: 1,
     borderRadius: 10,
-    paddingHorizontal: 12,
-    fontSize: 16,
+    paddingHorizontal: 10,
+    fontSize: 14,
   },
+
+  // ── Category ──────────────────────────────────────────────────────
+  categoryLabel: {
+    fontSize: 13,
+    fontWeight: "600",
+    opacity: 0.65,
+    marginTop: 2,
+  },
+
+  // ── Meta ──────────────────────────────────────────────────────────
+  addedOn: { fontSize: 12, opacity: 0.45, marginTop: 2 },
+
+  // ── Save button ───────────────────────────────────────────────────
   saveBtn: {
-    height: 48,
-    borderRadius: 10,
-    backgroundColor: "#000000",
+    height: 50,
+    borderRadius: 12,
+    backgroundColor: "#000",
     alignItems: "center",
     justifyContent: "center",
+    marginTop: 4,
   },
-  saveBtnPressed: { opacity: 0.85 },
-  saveBtnDisabled: { opacity: 0.6 },
-  saveBtnText: { fontSize: 16, fontWeight: "600" },
-  deleteBtnPressed: { opacity: 0.7 },
+  saveBtnText: { fontSize: 16, fontWeight: "700" },
+
+  // ── Delete confirm ────────────────────────────────────────────────
   confirmRow: {
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#C00",
     padding: 14,
     gap: 12,
   },
-  confirmText: {
-    fontSize: 14,
-    textAlign: "center",
-    color: "#C00",
-  },
-  confirmButtons: {
-    flexDirection: "row",
-    gap: 10,
-  },
+  confirmText: { fontSize: 14, textAlign: "center", color: "#C00" },
+  confirmButtons: { flexDirection: "row", gap: 10 },
   confirmCancel: {
     flex: 1,
     height: 44,
@@ -622,10 +613,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  confirmCancelText: {
-    fontSize: 15,
-    fontWeight: "600",
-  },
+  confirmCancelText: { fontSize: 15, fontWeight: "600" },
   confirmDeleteBtn: {
     flex: 1,
     height: 44,
@@ -634,11 +622,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  confirmDeleteText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#fff",
-  },
+  confirmDeleteText: { fontSize: 15, fontWeight: "600", color: "#fff" },
+
+  // ── Menu sheet ────────────────────────────────────────────────────
   menuOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.45)",
@@ -692,8 +678,5 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  menuCancelText: {
-    fontSize: 16,
-    fontWeight: "600",
-  },
+  menuCancelText: { fontSize: 16, fontWeight: "600" },
 });

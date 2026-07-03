@@ -1,11 +1,14 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system/legacy";
 
-const KEY_OUTFITS = "@cpw_outfits_v1";
+import { saveToCameraRoll } from "@/lib/save-to-camera-roll";
+import { getSupabase } from "@/supabase-client";
+import { deleteOutfitPhoto, uploadOutfitPhoto } from "./outfit-upload";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 export type DayOutfit = {
   id: string;
-  photoUri: string;
+  photoUri: string;   // Supabase Storage public URL, or "" if no photo
   itemIds: string[];
 };
 
@@ -13,6 +16,8 @@ export type MonthCell = {
   day: number | null;
   dateKey: string | null;
 };
+
+// ─── Draft photo helpers (used by the home camera screen) ─────────────────────
 
 function storageBaseDir(): string {
   const base = FileSystem.documentDirectory ?? FileSystem.cacheDirectory;
@@ -48,9 +53,175 @@ export async function draftPhotoExists(): Promise<boolean> {
   }
 }
 
-function normalizeOutfitsMap(
-  raw: Record<string, unknown>,
-): Record<string, DayOutfit[]> {
+// ─── Row mapper ───────────────────────────────────────────────────────────────
+
+function rowToOutfit(row: Record<string, unknown>): DayOutfit {
+  return {
+    id: row.id as string,
+    photoUri: (row.photo_url as string | null) ?? "",
+    itemIds: (row.item_ids as string[]) ?? [],
+  };
+}
+
+// ─── Read ─────────────────────────────────────────────────────────────────────
+
+/** Load all outfits for the current user, grouped by date key. */
+export async function getOutfitsMap(): Promise<Record<string, DayOutfit[]>> {
+  const supabase = getSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  const { data } = await supabase
+    .from("outfits")
+    .select("id, date_key, photo_url, item_ids")
+    .eq("user_id", user?.id ?? "")
+    .order("created_at", { ascending: true });
+
+  const map: Record<string, DayOutfit[]> = {};
+  for (const row of data ?? []) {
+    const dk = row.date_key as string;
+    if (!map[dk]) map[dk] = [];
+    map[dk].push(rowToOutfit(row as Record<string, unknown>));
+  }
+  return map;
+}
+
+/** Load outfits for a single date. */
+export async function getOutfitsForDate(dateKey: string): Promise<DayOutfit[]> {
+  const supabase = getSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  const { data } = await supabase
+    .from("outfits")
+    .select("id, date_key, photo_url, item_ids")
+    .eq("user_id", user?.id ?? "")
+    .eq("date_key", dateKey)
+    .order("created_at", { ascending: true });
+
+  return (data ?? []).map((row) => rowToOutfit(row as Record<string, unknown>));
+}
+
+// ─── Write ────────────────────────────────────────────────────────────────────
+
+/** Save an outfit with no photo. */
+export async function saveOutfitItemsOnly(
+  itemIds: string[],
+  dateKey?: string,
+): Promise<void> {
+  const key = dateKey ?? getTodayDateKey();
+  const supabase = getSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+
+  await supabase.from("outfits").insert({
+    id: `${key}-${Date.now()}`,
+    user_id: user?.id ?? null,
+    date_key: key,
+    photo_url: null,
+    item_ids: [...itemIds],
+  });
+}
+
+/** Save an outfit and upload its photo to Supabase Storage. */
+export async function saveOutfitWithPhoto(
+  itemIds: string[],
+  localPhotoUri: string,
+  dateKey?: string,
+): Promise<void> {
+  const key = dateKey ?? getTodayDateKey();
+  const supabase = getSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+
+  saveToCameraRoll(localPhotoUri);
+
+  const photoUrl = await uploadOutfitPhoto(localPhotoUri, user?.id);
+
+  await supabase.from("outfits").insert({
+    id: `${key}-${Date.now()}`,
+    user_id: user?.id ?? null,
+    date_key: key,
+    photo_url: photoUrl,
+    item_ids: [...itemIds],
+  });
+}
+
+/**
+ * Legacy helper used by the home-screen camera flow.
+ * Reads the draft photo, uploads it, then clears the local draft.
+ */
+export async function saveOutfitForToday(itemIds: string[]): Promise<void> {
+  const draft = getDraftPhotoUri();
+  const info = await FileSystem.getInfoAsync(draft);
+  if (!info.exists) throw new Error("No draft photo. Take a picture first.");
+  await saveOutfitWithPhoto(itemIds, draft, getTodayDateKey());
+  await FileSystem.deleteAsync(draft, { idempotent: true });
+}
+
+// ─── Update ───────────────────────────────────────────────────────────────────
+
+/**
+ * Edit an existing outfit's items and/or photo.
+ * - `newPhotoUri === null`             → user cleared the photo
+ * - `newPhotoUri === originalPhotoUri` → photo unchanged (both are the existing remote URL)
+ * - `newPhotoUri !== originalPhotoUri` → user picked a new local photo
+ */
+export async function updateOutfit(
+  _dateKey: string,
+  outfitId: string,
+  itemIds: string[],
+  newPhotoUri: string | null,
+  originalPhotoUri: string,
+): Promise<void> {
+  const supabase = getSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+
+  let finalPhotoUrl: string | null = originalPhotoUri || null;
+
+  if (newPhotoUri === null) {
+    // Photo cleared
+    finalPhotoUrl = null;
+    if (originalPhotoUri) {
+      await deleteOutfitPhoto(originalPhotoUri).catch(() => {});
+    }
+  } else if (newPhotoUri !== originalPhotoUri) {
+    // New local photo selected — upload it, then delete the old one
+    saveToCameraRoll(newPhotoUri);
+    finalPhotoUrl = await uploadOutfitPhoto(newPhotoUri, user?.id);
+    if (originalPhotoUri) {
+      await deleteOutfitPhoto(originalPhotoUri).catch(() => {});
+    }
+  }
+
+  await supabase
+    .from("outfits")
+    .update({ item_ids: [...itemIds], photo_url: finalPhotoUrl })
+    .eq("id", outfitId);
+}
+
+// ─── Delete ───────────────────────────────────────────────────────────────────
+
+export async function deleteOutfit(
+  _dateKey: string,
+  outfitId: string,
+): Promise<void> {
+  const supabase = getSupabase();
+
+  // Fetch the photo URL before deleting so we can clean up storage
+  const { data } = await supabase
+    .from("outfits")
+    .select("photo_url")
+    .eq("id", outfitId)
+    .single();
+
+  await supabase.from("outfits").delete().eq("id", outfitId);
+
+  if (data?.photo_url) {
+    await deleteOutfitPhoto(data.photo_url as string).catch(() => {});
+  }
+}
+
+// ─── One-time migration: AsyncStorage → Supabase ──────────────────────────────
+
+const MIGRATION_DONE_KEY = "@cpw_outfits_migrated_v1";
+const LEGACY_STORAGE_KEY = "@cpw_outfits_v1";
+
+function normalizeLegacyMap(raw: Record<string, unknown>): Record<string, DayOutfit[]> {
   const out: Record<string, DayOutfit[]> = {};
   for (const [dateKey, val] of Object.entries(raw)) {
     if (val == null) continue;
@@ -58,112 +229,95 @@ function normalizeOutfitsMap(
       out[dateKey] = val.map((e: unknown, i: number) => {
         const o = e as Partial<DayOutfit>;
         return {
-          id: o.id ?? `${dateKey}-${i}-${o.photoUri?.slice(-8) ?? i}`,
+          id: o.id ?? `${dateKey}-${i}-legacy`,
           photoUri: o.photoUri ?? "",
           itemIds: Array.isArray(o.itemIds) ? o.itemIds : [],
         };
       });
     } else if (typeof val === "object" && val !== null && "photoUri" in val) {
       const o = val as { photoUri: string; itemIds?: string[] };
-      out[dateKey] = [
-        {
-          id: `${dateKey}-legacy`,
-          photoUri: o.photoUri,
-          itemIds: o.itemIds ?? [],
-        },
-      ];
+      out[dateKey] = [{ id: `${dateKey}-0-legacy`, photoUri: o.photoUri, itemIds: o.itemIds ?? [] }];
     }
   }
   return out;
 }
 
-async function loadOutfitsRaw(): Promise<Record<string, unknown>> {
-  const raw = await AsyncStorage.getItem(KEY_OUTFITS);
-  if (!raw) return {};
+/**
+ * Run once per device: copy existing AsyncStorage outfit data into Supabase.
+ * Call this after the user is confirmed to be logged in.
+ * Photos that still exist as local files are uploaded; missing ones are skipped.
+ */
+export async function migrateLocalOutfitsToSupabase(): Promise<void> {
+  const AsyncStorage = (await import("@react-native-async-storage/async-storage")).default;
+
+  const done = await AsyncStorage.getItem(MIGRATION_DONE_KEY);
+  if (done === "1") return;
+
+  const rawJson = await AsyncStorage.getItem(LEGACY_STORAGE_KEY);
+  if (!rawJson) {
+    await AsyncStorage.setItem(MIGRATION_DONE_KEY, "1");
+    return;
+  }
+
+  const supabase = getSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return; // not logged in — will retry next time
+
+  let raw: Record<string, unknown>;
   try {
-    return JSON.parse(raw) as Record<string, unknown>;
+    raw = JSON.parse(rawJson) as Record<string, unknown>;
   } catch {
-    return {};
+    await AsyncStorage.setItem(MIGRATION_DONE_KEY, "1");
+    return;
   }
-}
 
-async function loadOutfits(): Promise<Record<string, DayOutfit[]>> {
-  return normalizeOutfitsMap(await loadOutfitsRaw());
-}
+  const legacy = normalizeLegacyMap(raw);
+  const rows: {
+    id: string;
+    user_id: string;
+    date_key: string;
+    photo_url: string | null;
+    item_ids: string[];
+  }[] = [];
 
-async function saveOutfits(map: Record<string, DayOutfit[]>): Promise<void> {
-  await AsyncStorage.setItem(KEY_OUTFITS, JSON.stringify(map));
-}
+  for (const [dateKey, outfits] of Object.entries(legacy)) {
+    for (const outfit of outfits) {
+      let photoUrl: string | null = null;
 
-export async function getOutfitsMap(): Promise<Record<string, DayOutfit[]>> {
-  return loadOutfits();
-}
+      // Try to upload the local photo if it still exists on disk
+      if (outfit.photoUri && !outfit.photoUri.startsWith("http")) {
+        try {
+          const info = await FileSystem.getInfoAsync(outfit.photoUri);
+          if (info.exists) {
+            photoUrl = await uploadOutfitPhoto(outfit.photoUri, user.id);
+          }
+        } catch {
+          // Best-effort — skip photo if upload fails
+        }
+      } else if (outfit.photoUri.startsWith("http")) {
+        photoUrl = outfit.photoUri; // already a remote URL
+      }
 
-export async function getOutfitsForDate(dateKey: string): Promise<DayOutfit[]> {
-  const map = await loadOutfits();
-  return map[dateKey] ?? [];
-}
-
-export async function saveOutfitForToday(itemIds: string[]): Promise<void> {
-  const dateKey = getTodayDateKey();
-  await ensureOutfitsDirectory();
-  const draft = getDraftPhotoUri();
-  const draftInfo = await FileSystem.getInfoAsync(draft);
-  if (!draftInfo.exists)
-    throw new Error("No draft photo. Take a picture first.");
-  const entryId = `${dateKey}-${Date.now()}`;
-  const finalUri = `${outfitsDir()}${entryId}.jpg`;
-  await FileSystem.copyAsync({ from: draft, to: finalUri });
-  await FileSystem.deleteAsync(draft, { idempotent: true });
-  const outfits = await loadOutfits();
-  const list = outfits[dateKey] ?? [];
-  outfits[dateKey] = [
-    ...list,
-    { id: entryId, photoUri: finalUri, itemIds: [...itemIds] },
-  ];
-  await saveOutfits(outfits);
-}
-
-export async function saveOutfitItemsOnly(
-  itemIds: string[],
-  dateKey?: string,
-): Promise<void> {
-  const key = dateKey ?? getTodayDateKey();
-  const entryId = `${key}-${Date.now()}`;
-  const outfits = await loadOutfits();
-  const list = outfits[key] ?? [];
-  outfits[key] = [
-    ...list,
-    { id: entryId, photoUri: "", itemIds: [...itemIds] },
-  ];
-  await saveOutfits(outfits);
-}
-
-export async function deleteOutfit(
-  dateKey: string,
-  outfitId: string,
-): Promise<void> {
-  const outfits = await loadOutfits();
-  const list = outfits[dateKey] ?? [];
-  const removed = list.find((o) => o.id === outfitId);
-  if (!removed) throw new Error("Outfit not found");
-  const next = list.filter((o) => o.id !== outfitId);
-  if (next.length === 0) {
-    delete outfits[dateKey];
-  } else {
-    outfits[dateKey] = next;
-  }
-  await saveOutfits(outfits);
-  if (removed.photoUri) {
-    try {
-      const info = await FileSystem.getInfoAsync(removed.photoUri);
-      if (info.exists)
-        await FileSystem.deleteAsync(removed.photoUri, { idempotent: true });
-    } catch {
-      // ignore missing file
+      rows.push({
+        id: outfit.id,
+        user_id: user.id,
+        date_key: dateKey,
+        photo_url: photoUrl,
+        item_ids: outfit.itemIds,
+      });
     }
   }
+
+  if (rows.length > 0) {
+    await supabase
+      .from("outfits")
+      .upsert(rows, { onConflict: "id", ignoreDuplicates: true });
+  }
+
+  await AsyncStorage.setItem(MIGRATION_DONE_KEY, "1");
 }
+
+// ─── Pure helpers ─────────────────────────────────────────────────────────────
 
 export function getTodayDateKey(d = new Date()): string {
   const y = d.getFullYear();

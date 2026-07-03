@@ -1,22 +1,14 @@
-import { Pressable, ScrollView, StyleSheet } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 
 import { ThemedText } from "@/components/themed-text";
 import { useThemeColor } from "@/hooks/use-theme-color";
 
-export const CATEGORIES = [
-  "top",
-  "pants",
-  "shoes",
-  "jewelry",
-  "hat",
-  "accessory",
-] as const;
-
-export type Category = (typeof CATEGORIES)[number];
+export type Category = string;
 
 type Props = {
   value: Category | null;
   onChange: (cat: Category | null) => void;
+  categories: Category[];
   nullable?: boolean;
   disabled?: boolean;
 };
@@ -24,6 +16,7 @@ type Props = {
 export function CategoryPicker({
   value,
   onChange,
+  categories,
   nullable = false,
   disabled = false,
 }: Props) {
@@ -31,12 +24,8 @@ export function CategoryPicker({
   const textColor = useThemeColor({}, "text");
 
   return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      contentContainerStyle={styles.row}
-    >
-      {CATEGORIES.map((cat) => {
+    <View style={styles.row}>
+      {categories.map((cat) => {
         const selected = value === cat;
         return (
           <Pressable
@@ -66,94 +55,24 @@ export function CategoryPicker({
           </Pressable>
         );
       })}
-    </ScrollView>
-  );
-}
-
-// A non-scrollable wrapping version for filter bars
-export function CategoryFilterBar({
-  value,
-  onChange,
-}: {
-  value: Category | null;
-  onChange: (cat: Category | null) => void;
-}) {
-  const borderColor = useThemeColor({ light: "#C6C6C8" }, "icon");
-  const textColor = useThemeColor({}, "text");
-
-  return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      contentContainerStyle={styles.filterRow}
-    >
-      <Pressable
-        onPress={() => onChange(null)}
-        style={[
-          styles.chip,
-          { borderColor },
-          value === null && styles.chipSelected,
-        ]}
-        accessibilityRole="button"
-        accessibilityLabel="All"
-        accessibilityState={{ selected: value === null }}
-      >
-        <ThemedText
-          style={[
-            styles.chipText,
-            { color: value === null ? "#fff" : textColor },
-          ]}
-        >
-          all
-        </ThemedText>
-      </Pressable>
-      {CATEGORIES.map((cat) => {
-        const selected = value === cat;
-        return (
-          <Pressable
-            key={cat}
-            onPress={() => onChange(selected ? null : cat)}
-            style={[
-              styles.chip,
-              { borderColor },
-              selected && styles.chipSelected,
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel={cat}
-            accessibilityState={{ selected }}
-          >
-            <ThemedText
-              style={[
-                styles.chipText,
-                { color: selected ? "#fff" : textColor },
-              ]}
-            >
-              {cat}
-            </ThemedText>
-          </Pressable>
-        );
-      })}
-    </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 8,
     paddingVertical: 2,
   },
-  filterRow: {
-    flexDirection: "row",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
   chip: {
+    height: 32,
     paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
+    borderRadius: 16,
     borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
   chipSelected: {
     backgroundColor: "#000",

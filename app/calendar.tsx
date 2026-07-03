@@ -236,7 +236,7 @@ export default function CalendarScreen() {
                 (sum, o) => sum + outfitCostPerWear(o.itemIds, itemMetaMap),
                 0,
               );
-              const hasCpw = item.outfits.length > 0 && totalCpw > 0;
+              const hasCpw = item.outfits.length > 0;
               const isToday = item.dateKey === todayKey;
               const temp = item.dateKey != null ? weatherMap[item.dateKey] : undefined;
 

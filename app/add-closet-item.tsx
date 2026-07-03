@@ -1,10 +1,8 @@
 import { uploadClosetItemImage } from "@/lib/closet-upload";
 import { Ionicons } from "@expo/vector-icons";
-import * as Clipboard from "expo-clipboard";
-import * as FileSystem from "expo-file-system/legacy";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -23,6 +21,8 @@ import { CategoryPicker, type Category } from "@/components/category-picker";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
+import { listCategories } from "@/lib/categories";
+import { liftSubject, subjectLiftAvailable } from "@/lib/subject-lift";
 import { getSupabase } from "@/supabase-client";
 
 const PICKER_OPTIONS: ImagePicker.ImagePickerOptions = {
@@ -39,15 +39,20 @@ type BulkItem = {
   costText: string;
   wearsText: string;
   category: Category | null;
+  processingBg?: boolean;
 };
 
 // ── Phase types ──────────────────────────────────────────────────────────────
-// "pick"      → initial screen: camera / library / paste buttons
+// "pick"      → initial screen: camera / library buttons
 // "capturing" → camera multi-shot phase
 // "editing"   → fill in details for each photo
 
 export default function AddClosetItemScreen() {
   const router = useRouter();
+  const { capturedUri, capturedUris } = useLocalSearchParams<{
+    capturedUri?: string;
+    capturedUris?: string;
+  }>();
 
   const [phase, setPhase] = useState<"pick" | "capturing" | "editing">("pick");
   const [bulkItems, setBulkItems] = useState<BulkItem[]>([]);
@@ -55,9 +60,16 @@ export default function AddClosetItemScreen() {
   const [pendingUris, setPendingUris] = useState<string[]>([]);
   const [picking, setPicking] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [categories, setCategories] = useState<Category[]>([]);
 
   const costRef = useRef<TextInput>(null);
   const wearsRef = useRef<TextInput>(null);
+
+  useEffect(() => {
+    listCategories()
+      .then((rows) => setCategories(rows.map((r) => r.name)))
+      .catch(() => setCategories([]));
+  }, []);
 
   const textColor = useThemeColor({}, "text");
   const placeholderColor = useThemeColor({ light: "#8E8E93" }, "icon");
@@ -69,37 +81,64 @@ export default function AddClosetItemScreen() {
     { color: textColor, borderColor, backgroundColor: inputBackground },
   ];
 
-  // ── Web Ctrl+V paste ──────────────────────────────────────────────────────
-  useEffect(() => {
-    if (Platform.OS !== "web") return;
-    const handlePaste = (e: ClipboardEvent) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      for (const item of Array.from(items)) {
-        if (item.type.startsWith("image/")) {
-          e.preventDefault();
-          const file = item.getAsFile();
-          if (!file) continue;
-          const reader = new FileReader();
-          reader.onload = (ev) => {
-            const dataUri = ev.target?.result as string;
-            if (dataUri) startEditingWithUris([dataUri]);
-          };
-          reader.readAsDataURL(file);
-          break;
-        }
-      }
-    };
-    document.addEventListener("paste", handlePaste);
-    return () => document.removeEventListener("paste", handlePaste);
-  }, []);
-
   // ── Helpers ───────────────────────────────────────────────────────────────
   function startEditingWithUris(uris: string[]) {
-    setBulkItems(uris.map((uri) => ({ uri, brand: "", name: "", costText: "", wearsText: "", category: null })));
+    const canLiftSubject = subjectLiftAvailable();
+    setBulkItems(
+      uris.map((uri) => ({
+        uri,
+        brand: "",
+        name: "",
+        costText: "",
+        wearsText: "",
+        category: null,
+        processingBg: canLiftSubject,
+      })),
+    );
     setBulkIndex(0);
     setPhase("editing");
+
+    if (canLiftSubject) {
+      uris.forEach((originalUri, index) => {
+        liftSubject(originalUri)
+          .then((cutoutUri) => {
+            setBulkItems((prev) => {
+              if (prev[index]?.uri !== originalUri) return prev;
+              const next = [...prev];
+              next[index] = { ...next[index], uri: cutoutUri, processingBg: false };
+              return next;
+            });
+          })
+          .catch(() => {
+            setBulkItems((prev) => {
+              if (prev[index]?.uri !== originalUri) return prev;
+              const next = [...prev];
+              next[index] = { ...next[index], processingBg: false };
+              return next;
+            });
+          });
+      });
+    }
   }
+
+  // Arrived here with photo(s) already picked — either a single image from the
+  // web-capture screen or the camera, or multiple from a library multi-select,
+  // both picked from the closet FAB before navigating here.
+  useEffect(() => {
+    if (typeof capturedUri === "string" && capturedUri) {
+      startEditingWithUris([capturedUri]);
+      return;
+    }
+    if (typeof capturedUris === "string" && capturedUris) {
+      try {
+        const uris = JSON.parse(capturedUris);
+        if (Array.isArray(uris) && uris.length > 0) startEditingWithUris(uris);
+      } catch {
+        // ignore malformed param
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [capturedUri, capturedUris]);
 
   // ── Photo pickers ─────────────────────────────────────────────────────────
   const pickFromLibrary = async () => {
@@ -157,37 +196,6 @@ export default function AddClosetItemScreen() {
       }
     } catch (e) {
       Alert.alert("Error", e instanceof Error ? e.message : "Could not open camera.");
-    } finally {
-      setPicking(false);
-    }
-  };
-
-  const pasteFromClipboard = async () => {
-    if (picking) return;
-    setPicking(true);
-    try {
-      const hasImage = await Clipboard.hasImageAsync();
-      if (!hasImage) {
-        Alert.alert("No image", "There is no image in your clipboard.");
-        return;
-      }
-      const result = await Clipboard.getImageAsync({ format: "png" });
-      if (!result?.data) {
-        Alert.alert("Paste failed", "Could not read image from clipboard.");
-        return;
-      }
-      let uri: string;
-      if (Platform.OS === "web") {
-        uri = result.data.startsWith("data:") ? result.data : `data:image/png;base64,${result.data}`;
-      } else {
-        uri = `${FileSystem.cacheDirectory}clipboard-${Date.now()}.png`;
-        await FileSystem.writeAsStringAsync(uri, result.data, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-      }
-      startEditingWithUris([uri]);
-    } catch (e) {
-      Alert.alert("Paste failed", e instanceof Error ? e.message : "Could not read image from clipboard.");
     } finally {
       setPicking(false);
     }
@@ -320,11 +328,21 @@ export default function AddClosetItemScreen() {
           )}
 
           <View style={styles.wizardRow}>
-            <Image
-              source={{ uri: current.uri }}
-              style={styles.wizardPreview}
-              contentFit="cover"
-            />
+            <View style={styles.wizardPreviewWrap}>
+              <Image
+                source={{ uri: current.uri }}
+                style={styles.wizardPreview}
+                contentFit="contain"
+              />
+              {current.processingBg && (
+                <View style={styles.wizardPreviewOverlay}>
+                  <ActivityIndicator color="#fff" />
+                  <ThemedText style={styles.wizardPreviewOverlayText} lightColor="#fff" darkColor="#fff">
+                    Removing background…
+                  </ThemedText>
+                </View>
+              )}
+            </View>
             <View style={styles.wizardFields}>
               <BrandInput
                 value={current.brand}
@@ -374,17 +392,18 @@ export default function AddClosetItemScreen() {
           <CategoryPicker
             value={current.category}
             onChange={(cat) => updateField("category", cat)}
+            categories={categories}
             nullable
             disabled={saving}
           />
 
           <Pressable
             onPress={onNext}
-            disabled={saving}
+            disabled={saving || current.processingBg}
             style={({ pressed }) => [
               styles.nextBtn,
               pressed && { opacity: 0.85 },
-              saving && { opacity: 0.6 },
+              (saving || current.processingBg) && { opacity: 0.6 },
             ]}
           >
             {saving ? (
@@ -447,23 +466,6 @@ export default function AddClosetItemScreen() {
           <Ionicons name="images-outline" size={32} color={textColor} />
           <ThemedText style={styles.pickBtnLabel}>Library</ThemedText>
           <ThemedText style={styles.pickBtnSub}>Select multiple</ThemedText>
-        </Pressable>
-
-        <Pressable
-          onPress={pasteFromClipboard}
-          disabled={picking}
-          style={({ pressed }) => [
-            styles.pickBtn,
-            { borderColor, backgroundColor: inputBackground },
-            pressed && { opacity: 0.8 },
-            picking && { opacity: 0.5 },
-          ]}
-          accessibilityRole="button"
-          accessibilityLabel="Paste image from clipboard"
-        >
-          <Ionicons name="clipboard-outline" size={32} color={textColor} />
-          <ThemedText style={styles.pickBtnLabel}>Paste</ThemedText>
-          <ThemedText style={styles.pickBtnSub}>From clipboard</ThemedText>
         </Pressable>
       </View>
 
@@ -566,12 +568,30 @@ const styles = StyleSheet.create({
     borderRadius: 2,
   },
   wizardRow: { flexDirection: "row", gap: 12, alignItems: "flex-start" },
+  wizardPreviewWrap: {
+    width: 110,
+    flexShrink: 0,
+  },
   wizardPreview: {
     width: 110,
     aspectRatio: 3 / 4,
     borderRadius: 10,
     backgroundColor: "rgba(128,128,128,0.15)",
     flexShrink: 0,
+  },
+  wizardPreviewOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 10,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    padding: 6,
+  },
+  wizardPreviewOverlayText: {
+    fontSize: 10,
+    fontWeight: "600",
+    textAlign: "center",
   },
   wizardFields: { flex: 1, gap: 8 },
   inputCompact: {
