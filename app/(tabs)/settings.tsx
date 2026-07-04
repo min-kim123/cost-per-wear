@@ -6,18 +6,35 @@ import {
   Alert,
   Pressable,
   StyleSheet,
+  Switch,
   View,
 } from "react-native";
 
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
+import { TAB_META } from "@/constants/tabs";
 import { useThemeColor } from "@/hooks/use-theme-color";
+import { useDevTabVisibility } from "@/lib/dev-tab-visibility";
+import { useDevToggle } from "@/lib/dev-toggles";
 import { getSupabase } from "@/supabase-client";
+
+// Every tab except Settings itself can be hidden — Settings always stays
+// reachable so toggling tabs off can never lock you out of this screen.
+const TOGGLEABLE_TABS = TAB_META.filter((t) => t.key !== "settings");
+
 
 export default function SettingsScreen() {
   const router = useRouter();
   const [signingOut, setSigningOut] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const { isHidden, toggle } = useDevTabVisibility();
+  const categoriesToggle = useDevToggle("closet:categories");
+  const metricToggle = useDevToggle("closet:metric");
+
+  const closetToggles = [
+    { label: "Categories filter", icon: "filter-outline", ...categoriesToggle },
+    { label: "Metric selection", icon: "stats-chart-outline", ...metricToggle },
+  ] as const;
 
   const borderColor = useThemeColor({ light: "#C6C6C8" }, "icon");
   const destructiveColor = "#C00";
@@ -92,6 +109,63 @@ export default function SettingsScreen() {
           </Pressable>
         )}
       </View>
+
+      {__DEV__ && (
+        <View style={styles.devSection}>
+          <ThemedText style={styles.devHeading}>
+            Dev: navbar tabs
+          </ThemedText>
+          <View style={[styles.section, { borderColor }]}>
+            {TOGGLEABLE_TABS.map((tab, i) => (
+              <View
+                key={tab.key}
+                style={[
+                  styles.row,
+                  i < TOGGLEABLE_TABS.length - 1 && {
+                    borderBottomWidth: StyleSheet.hairlineWidth,
+                    borderBottomColor: borderColor,
+                  },
+                ]}
+              >
+                <Ionicons name={tab.icon.default as never} size={22} color={borderColor} />
+                <ThemedText style={styles.rowLabel}>{tab.title}</ThemedText>
+                <View style={styles.rowSpacer} />
+                <Switch
+                  value={!isHidden(tab.key)}
+                  onValueChange={() => toggle(tab.key)}
+                />
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
+
+      {__DEV__ && (
+        <View style={styles.devSection}>
+          <ThemedText style={styles.devHeading}>
+            Dev: closet UI
+          </ThemedText>
+          <View style={[styles.section, { borderColor }]}>
+            {closetToggles.map((t, i) => (
+              <View
+                key={t.label}
+                style={[
+                  styles.row,
+                  i < closetToggles.length - 1 && {
+                    borderBottomWidth: StyleSheet.hairlineWidth,
+                    borderBottomColor: borderColor,
+                  },
+                ]}
+              >
+                <Ionicons name={t.icon as never} size={22} color={borderColor} />
+                <ThemedText style={styles.rowLabel}>{t.label}</ThemedText>
+                <View style={styles.rowSpacer} />
+                <Switch value={!t.hidden} onValueChange={t.toggle} />
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
     </ThemedView>
   );
 }
@@ -123,6 +197,19 @@ const styles = StyleSheet.create({
   rowLabel: {
     fontSize: 16,
     fontWeight: "500",
+  },
+  rowSpacer: {
+    flex: 1,
+  },
+  devSection: {
+    marginTop: 28,
+  },
+  devHeading: {
+    fontSize: 13,
+    fontWeight: "600",
+    opacity: 0.6,
+    marginBottom: 8,
+    textTransform: "uppercase",
   },
   confirmRow: {
     padding: 16,

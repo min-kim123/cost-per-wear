@@ -1,7 +1,8 @@
 import { useFocusEffect } from "expo-router";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,7 +13,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useColorScheme } from "@/hooks/use-color-scheme";
-import { getOutfitsMap } from "@/lib/outfit-storage";
+import { getSnapshots, upsertTodaySnapshot } from "@/lib/cpw-history";
+import { getOutfitsMap, getTodayDateKey } from "@/lib/outfit-storage";
 import { getSupabase } from "@/supabase-client";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -23,10 +25,41 @@ type ClosetItem = {
   wears: number;
 };
 
-type ChartPoint = {
-  label: string;
+type DailyPoint = {
+  dateKey: string;
   cpw: number;
 };
+
+type ChartPoint = {
+  dateKey: string;
+  label: string;
+  cpw: number;
+  /** True for the single leading placeholder point before real tracking
+   * began — rendered as a flat dotted line, not counted as real data. */
+  synthetic: boolean;
+};
+
+type RangeKey = "1W" | "1M" | "3M" | "1Y" | "ALL";
+
+const RANGE_OPTIONS: { key: RangeKey; label: string }[] = [
+  { key: "ALL", label: "ALL" },
+  { key: "1W", label: "1W" },
+  { key: "1M", label: "1M" },
+  { key: "3M", label: "3M" },
+  { key: "1Y", label: "1Y" },
+];
+
+// "ALL" has no fixed window — it spans from the first log to today instead.
+const RANGE_DAYS: Record<Exclude<RangeKey, "ALL">, number> = {
+  "1W": 7,
+  "1M": 30,
+  "3M": 90,
+  "1Y": 365,
+};
+
+// Above this many days, "ALL" switches from daily "M/D" labels to monthly
+// ones — otherwise a multi-year history would cram illegible day labels.
+const ALL_MONTHLY_LABEL_THRESHOLD_DAYS = 35;
 
 // ─── Data helpers ─────────────────────────────────────────────────────────────
 
@@ -62,49 +95,132 @@ const MONTH_ABBR = [
   "Jan","Feb","Mar","Apr","May","Jun",
   "Jul","Aug","Sep","Oct","Nov","Dec",
 ];
+const WEEKDAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function toMonthLabel(dateKey: string): string {
   const [y, m] = dateKey.split("-");
   return `${MONTH_ABBR[parseInt(m, 10) - 1]} '${y.slice(2)}`;
 }
 
-async function buildChartPoints(items: ClosetItem[]): Promise<ChartPoint[]> {
-  if (items.length === 0) return [];
+function toDateObj(dateKey: string): Date {
+  return new Date(`${dateKey}T00:00:00`);
+}
+
+function addDays(d: Date, n: number): Date {
+  const copy = new Date(d);
+  copy.setDate(copy.getDate() + n);
+  return copy;
+}
+
+/**
+ * Build a dense, forward-filled daily CPW series covering from the first
+ * ever recorded date to today. Estimated values are reconstructed from
+ * outfit-log history; any day with a real recorded snapshot
+ * (`cpw_snapshots`) uses that ground-truth value instead, and today always
+ * uses the live, just-computed total.
+ */
+async function buildDenseSeries(items: ClosetItem[]): Promise<DailyPoint[]> {
+  const todayKey = getTodayDateKey();
 
   const outfitMap = await getOutfitsMap();
   const allDates = Object.keys(outfitMap).sort();
-  if (allDates.length === 0) return [];
 
-  // Start with current wears and work backwards through outfit history
-  const wears: Record<string, number> = {};
-  for (const item of items) wears[item.id] = item.wears;
-
-  const rawPoints: { dateKey: string; cpw: number }[] = [];
-
-  // Most-recent known CPW (end state)
-  rawPoints.push({
-    dateKey: allDates[allDates.length - 1],
-    cpw: computeTotalCPW(wears, items),
-  });
-
-  // Walk backwards to reconstruct history
-  for (const dateKey of [...allDates].reverse()) {
-    for (const outfit of outfitMap[dateKey] ?? []) {
-      for (const id of outfit.itemIds) {
-        wears[id] = Math.max(0, (wears[id] ?? 0) - 1);
+  // Reconstruct an end-of-day CPW estimate for every date with outfit activity.
+  const values = new Map<string, number>();
+  if (allDates.length > 0 && items.length > 0) {
+    const wears: Record<string, number> = {};
+    for (const item of items) wears[item.id] = item.wears;
+    for (const dateKey of [...allDates].reverse()) {
+      values.set(dateKey, computeTotalCPW(wears, items));
+      for (const outfit of outfitMap[dateKey] ?? []) {
+        for (const id of outfit.itemIds) {
+          wears[id] = Math.max(0, (wears[id] ?? 0) - 1);
+        }
       }
     }
-    rawPoints.unshift({ dateKey, cpw: computeTotalCPW(wears, items) });
   }
 
-  // Collapse to one point per calendar month (last value wins)
-  const byMonth = new Map<string, ChartPoint>();
-  for (const pt of rawPoints) {
-    const monthKey = pt.dateKey.slice(0, 7);
-    byMonth.set(monthKey, { label: toMonthLabel(pt.dateKey), cpw: pt.cpw });
+  // Real recorded snapshots are ground truth — they win over estimates.
+  const snapshots = await getSnapshots();
+  for (const s of snapshots) values.set(s.dateKey, s.totalCpw);
+
+  // Today always reflects the live total, computed just now.
+  const liveWears: Record<string, number> = {};
+  for (const item of items) liveWears[item.id] = item.wears;
+  values.set(todayKey, computeTotalCPW(liveWears, items));
+
+  if (values.size === 0) return [];
+
+  const knownDates = Array.from(values.keys()).sort();
+  const startKey = knownDates[0];
+
+  const dense: DailyPoint[] = [];
+  let lastValue: number | null = null;
+  let cursor = toDateObj(startKey);
+  const end = toDateObj(todayKey);
+  while (cursor <= end) {
+    const key = getTodayDateKey(cursor);
+    if (values.has(key)) lastValue = values.get(key)!;
+    if (lastValue !== null) dense.push({ dateKey: key, cpw: lastValue });
+    cursor = addDays(cursor, 1);
+  }
+  return dense;
+}
+
+function labelFor(dateKey: string, range: RangeKey, useMonthly = false): string {
+  if (range === "1W") return WEEKDAY_ABBR[toDateObj(dateKey).getDay()];
+  if (range === "1Y" || useMonthly) return toMonthLabel(dateKey);
+  const d = toDateObj(dateKey);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+/**
+ * Slice the dense daily series down to the selected range, at full daily
+ * resolution. If real tracking data doesn't cover the whole range, prepend
+ * a single flat placeholder point at the range start — the chart renders
+ * the gap between it and the first real point as a dotted line.
+ * "ALL" has no fixed window: it always starts exactly at the first known
+ * point, so there's never a placeholder to draw.
+ */
+function toRangePoints(dense: DailyPoint[], range: RangeKey): ChartPoint[] {
+  if (dense.length === 0) return [];
+
+  if (range === "ALL") {
+    const spanDays =
+      (toDateObj(dense[dense.length - 1].dateKey).getTime() -
+        toDateObj(dense[0].dateKey).getTime()) /
+      86400000;
+    const useMonthly = spanDays > ALL_MONTHLY_LABEL_THRESHOLD_DAYS;
+    return dense.map((p) => ({
+      dateKey: p.dateKey,
+      label: labelFor(p.dateKey, range, useMonthly),
+      cpw: p.cpw,
+      synthetic: false,
+    }));
   }
 
-  return Array.from(byMonth.values());
+  const rangeStartKey = getTodayDateKey(addDays(new Date(), -(RANGE_DAYS[range] - 1)));
+  const inRange = dense.filter((p) => p.dateKey >= rangeStartKey);
+  if (inRange.length === 0) return [];
+
+  const points: ChartPoint[] = [];
+  if (inRange[0].dateKey > rangeStartKey) {
+    points.push({
+      dateKey: rangeStartKey,
+      label: labelFor(rangeStartKey, range),
+      cpw: inRange[0].cpw,
+      synthetic: true,
+    });
+  }
+  for (const p of inRange) {
+    points.push({
+      dateKey: p.dateKey,
+      label: labelFor(p.dateKey, range),
+      cpw: p.cpw,
+      synthetic: false,
+    });
+  }
+  return points;
 }
 
 // ─── Line chart ───────────────────────────────────────────────────────────────
@@ -115,17 +231,40 @@ const PAD_TOP = 8;
 const PAD_BOTTOM = 28; // room for x-axis labels
 const DOT_R = 3.5;
 const LINE_H = 2.5;
+const DASH_LEN = 5;
+const DASH_GAP = 4;
+const MAX_DOTS = 60; // beyond this, individual dots get too dense to read
+
+/** Break a line segment into evenly spaced dash rectangles for a dotted look. */
+function dashSegments(x1: number, y1: number, x2: number, y2: number) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+  const ux = dx / (len || 1);
+  const uy = dy / (len || 1);
+  const dashes: { left: number; top: number; width: number }[] = [];
+  for (let d = 0; d < len; d += DASH_LEN + DASH_GAP) {
+    const dashLen = Math.min(DASH_LEN, len - d);
+    const cx = x1 + ux * (d + dashLen / 2);
+    const cy = y1 + uy * (d + dashLen / 2);
+    dashes.push({ left: cx - dashLen / 2, top: cy - LINE_H / 2, width: dashLen });
+  }
+  return { dashes, angle };
+}
 
 function LineChart({
   points,
   lineColor,
   gridColor,
   labelColor,
+  maxLabels = 4,
 }: {
   points: ChartPoint[];
   lineColor: string;
   gridColor: string;
   labelColor: string;
+  maxLabels?: number;
 }) {
   const [containerW, setContainerW] = useState(0);
 
@@ -133,7 +272,8 @@ function LineChart({
     return (
       <View style={styles.chartEmpty}>
         <Text style={[styles.chartEmptyText, { color: labelColor }]}>
-          Log outfits to see your CPW trend over time
+          Check back tomorrow — your CPW is logged daily and needs a couple
+          days to build a trend
         </Text>
       </View>
     );
@@ -146,8 +286,14 @@ function LineChart({
   const minCPW = Math.min(...points.map((p) => p.cpw));
   const range = maxCPW - minCPW || 1;
 
+  // Space points by real elapsed time, not by index — so a long dotted
+  // "no data yet" gap actually looks long next to a run of daily points.
+  const startTime = toDateObj(points[0].dateKey).getTime();
+  const endTime = toDateObj(points[points.length - 1].dateKey).getTime();
+  const totalSpan = Math.max(endTime - startTime, 1);
   const xOf = (i: number) =>
-    PAD_LEFT + (i / (points.length - 1)) * innerW;
+    PAD_LEFT +
+    ((toDateObj(points[i].dateKey).getTime() - startTime) / totalSpan) * innerW;
   const yOf = (cpw: number) =>
     PAD_TOP + (1 - (cpw - minCPW) / range) * innerH;
 
@@ -157,10 +303,43 @@ function LineChart({
     y: PAD_TOP + (1 - t) * innerH,
   }));
 
-  // X-axis labels: at most 4, evenly spaced
-  const stride = Math.max(1, Math.ceil(points.length / 4));
-  const xLabelIdxs = new Set<number>([0, points.length - 1]);
-  for (let i = 0; i < points.length; i += stride) xLabelIdxs.add(i);
+  // X-axis labels: at most `maxLabels`, evenly spaced by real elapsed time
+  // (points themselves may cluster near the end, e.g. a long dotted gap
+  // followed by daily data, so index-based striding would bunch labels up).
+  const labelCount = Math.min(maxLabels, points.length);
+  const candidateIdxs = new Set<number>();
+  for (let k = 0; k < labelCount; k++) {
+    const t = startTime + (k / Math.max(labelCount - 1, 1)) * totalSpan;
+    let bestIdx = 0;
+    let bestDiff = Infinity;
+    for (let i = 0; i < points.length; i++) {
+      const diff = Math.abs(toDateObj(points[i].dateKey).getTime() - t);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIdx = i;
+      }
+    }
+    candidateIdxs.add(bestIdx);
+  }
+  candidateIdxs.add(0);
+  candidateIdxs.add(points.length - 1);
+
+  // A cluster of real points can sit in a tiny sliver of a long time range
+  // (e.g. 10 days of data on a 1Y axis) — drop labels that would overlap.
+  const MIN_LABEL_GAP = 36;
+  const sortedCandidates = [...candidateIdxs].sort((a, b) => xOf(a) - xOf(b));
+  const xLabelIdxs: number[] = [sortedCandidates[0]];
+  for (let i = 1; i < sortedCandidates.length; i++) {
+    const idx = sortedCandidates[i];
+    const isLast = idx === points.length - 1;
+    const gap = xOf(idx) - xOf(xLabelIdxs[xLabelIdxs.length - 1]);
+    if (isLast && gap < MIN_LABEL_GAP && xLabelIdxs.length > 1) {
+      xLabelIdxs.pop();
+    } else if (!isLast && gap < MIN_LABEL_GAP) {
+      continue;
+    }
+    xLabelIdxs.push(idx);
+  }
 
   return (
     <View
@@ -189,14 +368,35 @@ function LineChart({
             </View>
           ))}
 
-          {/* Line segments */}
-          {points.slice(0, -1).map((pt, i) => {
+          {/* Line segments — dotted grey while there's no real data yet,
+              solid from the first real point onward */}
+          {points.slice(0, -1).flatMap((pt, i) => {
             const x1 = xOf(i),   y1 = yOf(pt.cpw);
             const x2 = xOf(i+1), y2 = yOf(points[i + 1].cpw);
+
+            if (pt.synthetic) {
+              const { dashes, angle } = dashSegments(x1, y1, x2, y2);
+              return dashes.map((d, j) => (
+                <View
+                  key={`${i}-${j}`}
+                  style={{
+                    position: "absolute",
+                    left: d.left,
+                    top: d.top,
+                    width: d.width,
+                    height: LINE_H,
+                    borderRadius: LINE_H / 2,
+                    backgroundColor: labelColor,
+                    transform: [{ rotate: `${angle}deg` }],
+                  }}
+                />
+              ));
+            }
+
             const dx = x2 - x1,  dy = y2 - y1;
             const len = Math.sqrt(dx * dx + dy * dy);
             const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-            return (
+            return [
               <View
                 key={i}
                 style={{
@@ -209,25 +409,30 @@ function LineChart({
                   backgroundColor: lineColor,
                   transform: [{ rotate: `${angle}deg` }],
                 }}
+              />,
+            ];
+          })}
+
+          {/* Dots — only on real data points; suppressed when too dense */}
+          {points.map((pt, i) => {
+            if (pt.synthetic) return null;
+            const isEndpoint = i === 0 || i === points.length - 1;
+            if (points.length > MAX_DOTS && !isEndpoint) return null;
+            return (
+              <View
+                key={i}
+                style={{
+                  position: "absolute",
+                  left: xOf(i) - DOT_R,
+                  top:  yOf(pt.cpw) - DOT_R,
+                  width:  DOT_R * 2,
+                  height: DOT_R * 2,
+                  borderRadius: DOT_R,
+                  backgroundColor: lineColor,
+                }}
               />
             );
           })}
-
-          {/* Dots */}
-          {points.map((pt, i) => (
-            <View
-              key={i}
-              style={{
-                position: "absolute",
-                left: xOf(i) - DOT_R,
-                top:  yOf(pt.cpw) - DOT_R,
-                width:  DOT_R * 2,
-                height: DOT_R * 2,
-                borderRadius: DOT_R,
-                backgroundColor: lineColor,
-              }}
-            />
-          ))}
 
           {/* X-axis labels */}
           {[...xLabelIdxs].map((idx) => (
@@ -259,7 +464,8 @@ export default function DataScreen() {
   const isDark = colorScheme === "dark";
 
   const [items, setItems] = useState<ClosetItem[]>([]);
-  const [chartPoints, setChartPoints] = useState<ChartPoint[]>([]);
+  const [denseSeries, setDenseSeries] = useState<DailyPoint[]>([]);
+  const [range, setRange] = useState<RangeKey>("1M");
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -267,7 +473,15 @@ export default function DataScreen() {
     try {
       const loaded = await loadItems();
       setItems(loaded);
-      setChartPoints(await buildChartPoints(loaded));
+      setDenseSeries(await buildDenseSeries(loaded));
+
+      // Log today's total CPW so tomorrow's chart has real ground truth,
+      // not just a backward-reconstructed estimate. Best-effort.
+      const liveTotalCPW = loaded.reduce(
+        (sum, item) => sum + item.cost / Math.max(item.wears, 1),
+        0,
+      );
+      upsertTodaySnapshot(liveTotalCPW, getTodayDateKey()).catch(() => {});
     } catch {
       // swallow — show empty state
     } finally {
@@ -279,6 +493,11 @@ export default function DataScreen() {
     useCallback(() => {
       load();
     }, [load]),
+  );
+
+  const chartPoints = useMemo(
+    () => toRangePoints(denseSeries, range),
+    [denseSeries, range],
   );
 
   const currentTotalCPW = items.reduce(
@@ -308,15 +527,6 @@ export default function DataScreen() {
           <ActivityIndicator style={styles.loader} />
         ) : (
           <>
-            {/* ── Hero CPW card ─────────────────────────────────────── */}
-            <View style={styles.heroCard}>
-              <Text style={styles.heroEyebrow}>Total Cost Per Wear</Text>
-              <Text style={styles.heroAmount}>${currentTotalCPW.toFixed(2)}</Text>
-              <Text style={styles.heroSub}>
-                across {items.length} item{items.length !== 1 ? "s" : ""} in your closet
-              </Text>
-            </View>
-
             {/* ── Stat row ──────────────────────────────────────────── */}
             <View style={styles.statRow}>
               {[
@@ -335,15 +545,52 @@ export default function DataScreen() {
             <View style={[styles.chartCard, { backgroundColor: chartBg }]}>
               <ThemedText style={styles.chartTitle}>CPW Over Time</ThemedText>
               <Text style={[styles.chartDesc, { color: labelColor }]}>
-                Total cost per wear as you log more outfits
+                Total cost per wear, logged daily
               </Text>
               <LineChart
                 points={chartPoints}
                 lineColor={textColor}
                 gridColor={gridColor}
                 labelColor={labelColor}
+                maxLabels={range === "1W" ? 7 : 4}
               />
+              <View style={styles.rangeRow}>
+                {RANGE_OPTIONS.map((opt) => {
+                  const selected = opt.key === range;
+                  return (
+                    <Pressable
+                      key={opt.key}
+                      onPress={() => setRange(opt.key)}
+                      style={[
+                        styles.rangeButton,
+                        selected && {
+                          backgroundColor: isDark
+                            ? "rgba(255,255,255,0.14)"
+                            : "rgba(0,0,0,0.08)",
+                        },
+                      ]}
+                      hitSlop={4}
+                    >
+                      <Text
+                        style={[
+                          styles.rangeButtonText,
+                          {
+                            color: selected ? textColor : labelColor,
+                            fontWeight: selected ? "700" : "500",
+                          },
+                        ]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
             </View>
+
+            <Text style={[styles.helperNote, { color: labelColor }]}>
+              The lower the total cost per wear, the greater the value of your initial investment into your closet.
+            </Text>
           </>
         )}
       </ScrollView>
@@ -359,36 +606,6 @@ const styles = StyleSheet.create({
   },
   loader: {
     marginTop: 60,
-  },
-
-  // Hero
-  heroCard: {
-    backgroundColor: "#111",
-    borderRadius: 18,
-    paddingVertical: 28,
-    paddingHorizontal: 22,
-    alignItems: "center",
-    marginBottom: 12,
-  },
-  heroEyebrow: {
-    color: "rgba(255,255,255,0.65)",
-    fontSize: 12,
-    fontWeight: "600",
-    letterSpacing: 1,
-    textTransform: "uppercase",
-    marginBottom: 8,
-  },
-  heroAmount: {
-    color: "#fff",
-    fontSize: 52,
-    fontWeight: "700",
-    letterSpacing: -1.5,
-    lineHeight: 56,
-  },
-  heroSub: {
-    color: "rgba(255,255,255,0.5)",
-    fontSize: 13,
-    marginTop: 6,
   },
 
   // Stat row
@@ -438,6 +655,31 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlign: "center",
     maxWidth: 220,
+  },
+
+  helperNote: {
+    fontSize: 12,
+    textAlign: "center",
+    lineHeight: 17,
+    marginTop: 2,
+    marginBottom: 8,
+    paddingHorizontal: 8,
+  },
+
+  // Range selector
+  rangeRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 6,
+    marginTop: 14,
+  },
+  rangeButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+  },
+  rangeButtonText: {
+    fontSize: 13,
   },
 
   // Chart internals

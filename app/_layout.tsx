@@ -6,6 +6,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { DevTogglesProvider } from "@/lib/dev-toggles";
 import { migrateLocalOutfitsToSupabase } from "@/lib/outfit-storage";
 import { getSupabase } from "@/supabase-client";
 
@@ -80,42 +81,44 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider value={DefaultTheme}>
         <SafeAreaView style={{ flex: 1 }} edges={["top"]}>
-          <AuthGuard>
-            <Stack>
-              <Stack.Screen name="auth" options={{ headerShown: false }} />
-              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-              <Stack.Screen
-                name="modal"
-                options={{ presentation: "modal", title: "Modal" }}
-              />
-              <Stack.Screen name="closet" options={{ title: "closet" }} />
-              <Stack.Screen
-                name="calendar"
-                options={{ title: "Calendar", animation: "slide_from_left" }}
-              />
-              <Stack.Screen
-                name="select-outfit-items"
-                options={{ title: "Today's outfit", presentation: "modal" }}
-              />
-              <Stack.Screen
-                name="add-closet-item"
-                options={{ title: "Add item", presentation: "modal" }}
-              />
-              <Stack.Screen
-                name="edit-closet-item"
-                options={{ title: "Edit item", presentation: "modal" }}
-              />
-              <Stack.Screen
-                name="web-capture"
-                options={{ presentation: "fullScreenModal", headerShown: false }}
-              />
-              <Stack.Screen
-                name="crop-image"
-                options={{ presentation: "fullScreenModal", headerShown: false }}
-              />
-              <Stack.Screen name="day-outfits" options={{ headerShown: false }} />
-            </Stack>
-          </AuthGuard>
+          <DevTogglesProvider>
+            <AuthGuard>
+              <Stack>
+                <Stack.Screen name="auth" options={{ headerShown: false }} />
+                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+                <Stack.Screen
+                  name="modal"
+                  options={{ presentation: "modal", title: "Modal" }}
+                />
+                <Stack.Screen name="closet" options={{ title: "closet" }} />
+                <Stack.Screen
+                  name="calendar"
+                  options={{ title: "Calendar", animation: "slide_from_left" }}
+                />
+                <Stack.Screen
+                  name="select-outfit-items"
+                  options={{ title: "Today's outfit", presentation: "modal" }}
+                />
+                <Stack.Screen
+                  name="add-closet-item"
+                  options={{ title: "Add item", presentation: "modal" }}
+                />
+                <Stack.Screen
+                  name="edit-closet-item"
+                  options={{ title: "Edit item", presentation: "modal" }}
+                />
+                <Stack.Screen
+                  name="web-capture"
+                  options={{ presentation: "fullScreenModal", headerShown: false }}
+                />
+                <Stack.Screen
+                  name="crop-image"
+                  options={{ presentation: "fullScreenModal", headerShown: false }}
+                />
+                <Stack.Screen name="day-outfits" options={{ headerShown: false }} />
+              </Stack>
+            </AuthGuard>
+          </DevTogglesProvider>
         </SafeAreaView>
         <StatusBar style="dark" />
       </ThemeProvider>

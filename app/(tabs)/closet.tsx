@@ -40,6 +40,7 @@ import {
   type CategorySection,
 } from "@/lib/categories";
 import { writeClipboardImageToLocalUri } from "@/lib/clipboard-image";
+import { useDevToggle } from "@/lib/dev-toggles";
 import { getSupabase } from "@/supabase-client";
 
 type ClothingItem = {
@@ -119,6 +120,25 @@ const SORT_OPTIONS: { key: SortKey; label: string }[] = [
   { key: "wears_desc", label: "Wears: high → low" },
 ];
 
+type MetricDisplay = "cpw" | "wears" | "cost";
+
+const METRIC_OPTIONS: { key: MetricDisplay; label: string }[] = [
+  { key: "cpw", label: "Cost per wear" },
+  { key: "wears", label: "Amount of wears" },
+  { key: "cost", label: "Initial cost" },
+];
+
+function formatMetric(item: ClothingItem, metric: MetricDisplay): string {
+  switch (metric) {
+    case "cpw":
+      return formatCurrency(item.cost / Math.max(item.wears, 1));
+    case "wears":
+      return `${item.wears} ${item.wears === 1 ? "wear" : "wears"}`;
+    case "cost":
+      return formatCurrency(item.cost);
+  }
+}
+
 function sortItems(items: ClothingItem[], key: SortKey): ClothingItem[] {
   return [...items].sort((a, b) => {
     const cpwA = a.cost / Math.max(a.wears, 1);
@@ -153,6 +173,10 @@ export default function ClosetScreen() {
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [showSortSheet, setShowSortSheet] = useState(false);
   const [showCategorySheet, setShowCategorySheet] = useState(false);
+  const [metricDisplay, setMetricDisplay] = useState<MetricDisplay | null>("cpw");
+  const [showMetricSheet, setShowMetricSheet] = useState(false);
+  const { hidden: categoriesButtonHidden } = useDevToggle("closet:categories");
+  const { hidden: metricButtonHidden } = useDevToggle("closet:metric");
   const [hasGmailAccess, setHasGmailAccess] = useState<boolean | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
@@ -477,8 +501,6 @@ export default function ClosetScreen() {
   const listBottomPad = Math.max(32, insets.bottom + 80);
 
   function renderClosetCard(item: ClothingItem, extraStyle?: { marginTop?: number; marginBottom?: number }) {
-    const costPerWear = item.cost / Math.max(item.wears, 1);
-
     return (
       <Pressable
         onPress={() => router.push(`/edit-closet-item?id=${item.id}`)}
@@ -501,12 +523,11 @@ export default function ClosetScreen() {
             />
           </View>
           <ThemedView style={styles.cardContent}>
-            <ThemedText numberOfLines={1} style={styles.itemBrand}>
-              <ThemedText style={styles.itemCpwInline}>
-                {formatCurrency(costPerWear)}
+            {metricDisplay && (
+              <ThemedText numberOfLines={1} style={styles.itemBrand}>
+                {formatMetric(item, metricDisplay)}
               </ThemedText>
-              {"  "}{formatCurrency(item.cost)}
-            </ThemedText>
+            )}
             <View style={styles.nameWrap}>
               <LinearGradient
                 colors={[`${cardBackground}00`, cardBackground]}
@@ -641,23 +662,39 @@ export default function ClosetScreen() {
                       color={sortKey ? "#fff" : textColor}
                     />
                   </Pressable>
-                  <Pressable
-                    onPress={() => setShowCategorySheet(true)}
-                    style={({ pressed }) => [
-                      styles.sortBtn,
-                      { borderColor, backgroundColor: inputBackground },
-                      categoryFilter && styles.sortBtnActive,
-                      pressed && { opacity: 0.7 },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Filter by category"
-                  >
-                    <Ionicons
-                      name="filter-outline"
-                      size={18}
-                      color={categoryFilter ? "#fff" : textColor}
-                    />
-                  </Pressable>
+                  {!categoriesButtonHidden && (
+                    <Pressable
+                      onPress={() => setShowCategorySheet(true)}
+                      style={({ pressed }) => [
+                        styles.sortBtn,
+                        { borderColor, backgroundColor: inputBackground },
+                        categoryFilter && styles.sortBtnActive,
+                        pressed && { opacity: 0.7 },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel="Filter by category"
+                    >
+                      <Ionicons
+                        name="filter-outline"
+                        size={18}
+                        color={categoryFilter ? "#fff" : textColor}
+                      />
+                    </Pressable>
+                  )}
+                  {!metricButtonHidden && (
+                    <Pressable
+                      onPress={() => setShowMetricSheet(true)}
+                      style={({ pressed }) => [
+                        styles.sortBtn,
+                        { borderColor, backgroundColor: inputBackground },
+                        pressed && { opacity: 0.7 },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel="Choose which metric to show"
+                    >
+                      <Ionicons name="stats-chart-outline" size={18} color={textColor} />
+                    </Pressable>
+                  )}
                 </View>
                 {loadError ? (
                   <ThemedText style={styles.errorBanner}>
@@ -863,6 +900,49 @@ export default function ClosetScreen() {
             ))}
             <Pressable
               onPress={() => setShowSortSheet(false)}
+              style={({ pressed }) => [
+                styles.sheetCancel,
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <ThemedText style={styles.sheetCancelText}>Cancel</ThemedText>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={showMetricSheet}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowMetricSheet(false)}
+      >
+        <Pressable
+          style={styles.sheetOverlay}
+          onPress={() => setShowMetricSheet(false)}
+        >
+          <View style={styles.sheetContainer}>
+            <View style={styles.sheetHandle} />
+            <ThemedText type="defaultSemiBold" style={styles.sheetTitle}>
+              Show under each item
+            </ThemedText>
+            {METRIC_OPTIONS.map(({ key, label }) => {
+              const active = metricDisplay === key;
+              return (
+                <Pressable
+                  key={key}
+                  onPress={() => { setMetricDisplay(active ? null : key); setShowMetricSheet(false); }}
+                  style={[styles.sheetOption, active && styles.sheetOptionActive]}
+                >
+                  <ThemedText style={[styles.sheetOptionText, active && styles.sheetOptionTextActive]}>
+                    {label}
+                  </ThemedText>
+                  {active && <Ionicons name="checkmark" size={18} color="#fff" />}
+                </Pressable>
+              );
+            })}
+            <Pressable
+              onPress={() => setShowMetricSheet(false)}
               style={({ pressed }) => [
                 styles.sheetCancel,
                 pressed && { opacity: 0.7 },
@@ -1252,11 +1332,6 @@ const styles = StyleSheet.create({
     width: "100%",
     aspectRatio: 3 / 4,
     borderRadius: 12,
-  },
-  itemCpwInline: {
-    fontSize: 12,
-    fontWeight: "400",
-    opacity: 1,
   },
   categoryBadge: {
     position: "absolute",

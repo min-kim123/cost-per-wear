@@ -24,12 +24,6 @@ type ClosetItem = {
   category: Category | null;
 };
 
-type GroupInsight = {
-  label: string;
-  avgWears: number;
-  itemCount: number;
-};
-
 // ─── Data loading ─────────────────────────────────────────────────────────────
 
 async function loadClosetItems(): Promise<ClosetItem[]> {
@@ -71,31 +65,6 @@ function topWornItems(items: ClosetItem[], limit: number): ClosetItem[] {
     .slice(0, limit);
 }
 
-function topGroup(
-  items: ClosetItem[],
-  keyOf: (item: ClosetItem) => string | null,
-): GroupInsight | null {
-  const buckets = new Map<string, { totalWears: number; itemCount: number }>();
-  for (const item of items) {
-    const key = keyOf(item);
-    if (!key) continue;
-    const bucket = buckets.get(key) ?? { totalWears: 0, itemCount: 0 };
-    bucket.totalWears += item.wears;
-    bucket.itemCount += 1;
-    buckets.set(key, bucket);
-  }
-
-  let best: GroupInsight | null = null;
-  for (const [label, { totalWears, itemCount }] of buckets) {
-    const avgWears = totalWears / itemCount;
-    if (avgWears <= 0) continue;
-    if (!best || avgWears > best.avgWears) {
-      best = { label, avgWears, itemCount };
-    }
-  }
-  return best;
-}
-
 function formatCurrency(value: number) {
   return `$${value.toFixed(2)}`;
 }
@@ -131,8 +100,6 @@ export default function ShoppingScreen() {
   );
 
   const topItems = topWornItems(items, 5);
-  const topCategory = topGroup(items, (item) => item.category);
-  const topBrand = topGroup(items, (item) => item.brand.trim() || null);
 
   return (
     <ThemedView style={styles.container}>
@@ -198,52 +165,6 @@ export default function ShoppingScreen() {
               </View>
             )}
 
-            {topCategory && (
-              <View style={styles.section}>
-                <ThemedText style={styles.sectionTitle}>
-                  Your favorite category
-                </ThemedText>
-                <View style={[styles.insightCard, { backgroundColor: cardBackground }]}>
-                  <Ionicons name="shirt-outline" size={22} color={labelColor} />
-                  <View style={styles.insightInfo}>
-                    <ThemedText type="defaultSemiBold">
-                      {topCategory.label.charAt(0).toUpperCase() +
-                        topCategory.label.slice(1)}
-                    </ThemedText>
-                    <ThemedText style={[styles.itemReason, { color: labelColor }]}>
-                      Averaging {topCategory.avgWears.toFixed(1)} wears across{" "}
-                      {topCategory.itemCount} item
-                      {topCategory.itemCount !== 1 ? "s" : ""} — your
-                      go-to category.
-                    </ThemedText>
-                  </View>
-                  <ComingSoonPill labelColor={labelColor} />
-                </View>
-              </View>
-            )}
-
-            {topBrand && (
-              <View style={styles.section}>
-                <ThemedText style={styles.sectionTitle}>
-                  Your favorite brand
-                </ThemedText>
-                <View style={[styles.insightCard, { backgroundColor: cardBackground }]}>
-                  <Ionicons name="pricetag-outline" size={22} color={labelColor} />
-                  <View style={styles.insightInfo}>
-                    <ThemedText type="defaultSemiBold">
-                      {topBrand.label}
-                    </ThemedText>
-                    <ThemedText style={[styles.itemReason, { color: labelColor }]}>
-                      Averaging {topBrand.avgWears.toFixed(1)} wears across{" "}
-                      {topBrand.itemCount} item
-                      {topBrand.itemCount !== 1 ? "s" : ""} — items from here
-                      earn their keep.
-                    </ThemedText>
-                  </View>
-                  <ComingSoonPill labelColor={labelColor} />
-                </View>
-              </View>
-            )}
           </>
         )}
       </ScrollView>
@@ -317,17 +238,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
     marginTop: 2,
-  },
-  insightCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 14,
-    padding: 14,
-    gap: 12,
-  },
-  insightInfo: {
-    flex: 1,
-    gap: 2,
   },
   pill: {
     borderWidth: 1,

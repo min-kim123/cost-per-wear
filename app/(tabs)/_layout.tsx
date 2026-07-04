@@ -1,12 +1,14 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Platform, Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SceneMap, TabView } from "react-native-tab-view";
 
+import { TAB_META, type RouteKey } from "@/constants/tabs";
 import { Colors } from "@/constants/theme";
 import { useColorScheme } from "@/hooks/use-color-scheme";
+import { useDevTabVisibility } from "@/lib/dev-tab-visibility";
 import CalendarScreen from "./calendar";
 import ClosetScreen from "./closet";
 import DataScreen from "./data";
@@ -14,34 +16,25 @@ import HomeScreen from "./index";
 import SettingsScreen from "./settings";
 import ShoppingScreen from "./shopping";
 
-const routes = [
-  { key: "calendar", title: "Calendar" },
-  { key: "index", title: "Home" },
-  { key: "closet", title: "Closet" },
-  { key: "shopping", title: "Shopping" },
-  { key: "data", title: "Data" },
-  { key: "settings", title: "Settings" },
-] as const;
-
-type RouteKey = (typeof routes)[number]["key"];
-
-const ICONS: Record<RouteKey, { default: string; active: string }> = {
-  calendar: { default: "calendar-outline", active: "calendar" },
-  index: { default: "camera-outline", active: "camera" },
-  closet: { default: "shirt-outline", active: "shirt" },
-  shopping: { default: "bag-outline", active: "bag" },
-  data: { default: "bar-chart-outline", active: "bar-chart" },
-  settings: { default: "settings-outline", active: "settings" },
-};
-
-const renderScene = SceneMap({
+const COMPONENTS: Record<RouteKey, React.ComponentType> = {
   calendar: CalendarScreen,
   index: HomeScreen,
   closet: ClosetScreen,
   shopping: ShoppingScreen,
   data: DataScreen,
   settings: SettingsScreen,
-});
+};
+
+const TAB_CONFIG = TAB_META.map((meta) => ({
+  ...meta,
+  component: COMPONENTS[meta.key],
+}));
+
+const ICONS: Record<RouteKey, { default: string; active: string }> =
+  Object.fromEntries(TAB_CONFIG.map(({ key, icon }) => [key, icon])) as Record<
+    RouteKey,
+    { default: string; active: string }
+  >;
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
@@ -52,14 +45,47 @@ export default function TabLayout() {
   const dividerColor =
     colorScheme === "dark" ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)";
 
-  const [index, setIndex] = useState(1); // default to Home
+  const { isHidden } = useDevTabVisibility();
 
-  const handleIndexChange = useCallback((i: number) => {
-    if (Platform.OS === "ios") {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
-    setIndex(i);
-  }, []);
+  // Dev-only tab visibility toggles (Settings screen) filter this list;
+  // in production builds every tab in TAB_CONFIG is always shown.
+  const visibleConfig = useMemo(
+    () => TAB_CONFIG.filter((t) => !isHidden(t.key)),
+    [isHidden],
+  );
+
+  const routes = useMemo(
+    () => visibleConfig.map(({ key, title }) => ({ key, title })),
+    [visibleConfig],
+  );
+
+  const renderScene = useMemo(
+    () =>
+      SceneMap(
+        Object.fromEntries(
+          visibleConfig.map(({ key, component }) => [key, component]),
+        ) as Record<RouteKey, React.ComponentType>,
+      ),
+    [visibleConfig],
+  );
+
+  const [selectedKey, setSelectedKey] = useState<RouteKey>("index"); // default to Home
+
+  const index = useMemo(() => {
+    const i = visibleConfig.findIndex((r) => r.key === selectedKey);
+    return i === -1 ? 0 : i;
+  }, [visibleConfig, selectedKey]);
+
+  const handleIndexChange = useCallback(
+    (i: number) => {
+      if (Platform.OS === "ios") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+      const nextKey = visibleConfig[i]?.key;
+      if (nextKey) setSelectedKey(nextKey);
+    },
+    [visibleConfig],
+  );
 
   const renderTabBar = useCallback(() => {
     return (
@@ -100,6 +126,7 @@ export default function TabLayout() {
       </View>
     );
   }, [
+    routes,
     index,
     tint,
     iconDefault,
@@ -111,10 +138,7 @@ export default function TabLayout() {
 
   return (
     <TabView
-      navigationState={{
-        index,
-        routes: routes as unknown as { key: string; title: string }[],
-      }}
+      navigationState={{ index, routes }}
       renderScene={renderScene}
       onIndexChange={handleIndexChange}
       renderTabBar={renderTabBar}
