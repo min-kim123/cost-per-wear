@@ -59,6 +59,59 @@ export function CategoryPicker({
   );
 }
 
+type MultiProps = {
+  values: Set<Category>;
+  onToggle: (cat: Category) => void;
+  categories: Category[];
+  disabled?: boolean;
+};
+
+/** Same chip row as CategoryPicker, but any number of categories can be active at once. */
+export function MultiCategoryPicker({
+  values,
+  onToggle,
+  categories,
+  disabled = false,
+}: MultiProps) {
+  const borderColor = useThemeColor({ light: "#C6C6C8" }, "icon");
+  const textColor = useThemeColor({}, "text");
+
+  return (
+    <View style={styles.row}>
+      {categories.map((cat) => {
+        const selected = values.has(cat);
+        return (
+          <Pressable
+            key={cat}
+            onPress={() => {
+              if (disabled) return;
+              onToggle(cat);
+            }}
+            style={[
+              styles.chip,
+              { borderColor },
+              selected && styles.chipSelected,
+              disabled && styles.chipDisabled,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={cat}
+            accessibilityState={{ selected }}
+          >
+            <ThemedText
+              style={[
+                styles.chipText,
+                { color: selected ? "#fff" : textColor },
+              ]}
+            >
+              {cat}
+            </ThemedText>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   row: {
     flexDirection: "row",

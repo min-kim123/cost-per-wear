@@ -15,3 +15,20 @@ export function onImageCaptured(cb: Listener): () => void {
 export function emitImageCaptured(uri: string) {
   listener?.(uri);
 }
+
+// Same idea, but for flows that produce several images at once
+// (e.g. cropping a library multi-select before adding to the closet).
+type MultiListener = (uris: string[]) => void;
+
+let multiListener: MultiListener | null = null;
+
+export function onImagesCaptured(cb: MultiListener): () => void {
+  multiListener = cb;
+  return () => {
+    if (multiListener === cb) multiListener = null;
+  };
+}
+
+export function emitImagesCaptured(uris: string[]) {
+  multiListener?.(uris);
+}

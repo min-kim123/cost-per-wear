@@ -15,7 +15,34 @@ const DEFAULT_CATEGORY_NAMES = [
   "accessory",
 ];
 
-/** Load this user's categories, lazily seeding the legacy defaults on first use. */
+/** Special category: items in it accrue +1 wear per elapsed day (see creditDailyStackWears). */
+export const DAILY_STACK_CATEGORY_NAME = "daily stack";
+
+/** Insert the Daily Stack category (positioned before everything else) if the user doesn't have it yet. */
+async function ensureDailyStackCategory(
+  supabase: ReturnType<typeof getSupabase>,
+  userId: string | undefined,
+  existing: CategoryRow[],
+): Promise<CategoryRow[]> {
+  if (existing.some((c) => c.name === DAILY_STACK_CATEGORY_NAME)) return existing;
+
+  const topPosition =
+    existing.length > 0 ? Math.min(...existing.map((c) => c.position)) - 1 : 0;
+
+  const { data, error } = await supabase
+    .from("categories")
+    .insert({ user_id: userId ?? null, name: DAILY_STACK_CATEGORY_NAME, position: topPosition })
+    .select("id, name, position")
+    .single();
+  if (error) {
+    // A concurrent call may have inserted it first — that's fine, just use what's there.
+    if (error.code === "23505") return existing;
+    throw new Error(error.message);
+  }
+  return [data as CategoryRow, ...existing].sort((a, b) => a.position - b.position);
+}
+
+/** Load this user's categories, lazily seeding the legacy defaults (and the Daily Stack category) on first use. */
 export async function listCategories(): Promise<CategoryRow[]> {
   const supabase = getSupabase();
   const {
@@ -28,7 +55,9 @@ export async function listCategories(): Promise<CategoryRow[]> {
     .eq("user_id", user?.id ?? "")
     .order("position", { ascending: true });
   if (error) throw new Error(error.message);
-  if (data && data.length > 0) return data as CategoryRow[];
+  if (data && data.length > 0) {
+    return ensureDailyStackCategory(supabase, user?.id, data as CategoryRow[]);
+  }
 
   const { data: seeded, error: seedError } = await supabase
     .from("categories")
@@ -41,7 +70,37 @@ export async function listCategories(): Promise<CategoryRow[]> {
     )
     .select("id, name, position");
   if (seedError) throw new Error(seedError.message);
-  return (seeded ?? []) as CategoryRow[];
+  return ensureDailyStackCategory(supabase, user?.id, (seeded ?? []) as CategoryRow[]);
+}
+
+/**
+ * Credit +1 wear for every full day elapsed since an item was placed in the Daily Stack
+ * category. Safe to call repeatedly (e.g. on every app open) — partial days are carried
+ * forward in `daily_stack_since` rather than lost.
+ */
+export async function creditDailyStackWears(): Promise<void> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("closet")
+    .select("id, wears, daily_stack_since")
+    .eq("category", DAILY_STACK_CATEGORY_NAME)
+    .not("daily_stack_since", "is", null);
+  if (error || !data) return;
+
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+
+  await Promise.all(
+    data.map((row) => {
+      const since = new Date(row.daily_stack_since as string).getTime();
+      const daysElapsed = Math.floor((now - since) / msPerDay);
+      if (!Number.isFinite(since) || daysElapsed <= 0) return null;
+
+      const wears = Math.max(0, (row.wears as number) ?? 0) + daysElapsed;
+      const daily_stack_since = new Date(since + daysElapsed * msPerDay).toISOString();
+      return supabase.from("closet").update({ wears, daily_stack_since }).eq("id", row.id);
+    }),
+  );
 }
 
 export async function addCategory(name: string): Promise<CategoryRow> {

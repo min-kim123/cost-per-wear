@@ -1,5 +1,6 @@
 import { uploadClosetItemImage } from "@/lib/closet-upload";
 import { Ionicons } from "@expo/vector-icons";
+import * as FileSystem from "expo-file-system/legacy";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
@@ -23,9 +24,10 @@ import { PasteImageButton } from "@/components/paste-image-button";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
-import { listCategories } from "@/lib/categories";
+import { DAILY_STACK_CATEGORY_NAME, listCategories } from "@/lib/categories";
 import { writeClipboardImageToLocalUri } from "@/lib/clipboard-image";
 import { onImageCaptured } from "@/lib/image-capture-bridge";
+import { liftSubject, subjectLiftAvailable } from "@/lib/subject-lift";
 import { getSupabase } from "@/supabase-client";
 
 const PICKER_OPTIONS: ImagePicker.ImagePickerOptions = {
@@ -44,6 +46,7 @@ export default function EditClosetItemScreen() {
   const [costText, setCostText] = useState("");
   const [wearsText, setWearsText] = useState("");
   const [category, setCategory] = useState<Category | null>(null);
+  const [originalCategory, setOriginalCategory] = useState<Category | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [existingImageUrl, setExistingImageUrl] = useState<string | null>(null);
   const [pickedUri, setPickedUri] = useState<string | null>(null);
@@ -56,6 +59,7 @@ export default function EditClosetItemScreen() {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [lifting, setLifting] = useState(false);
 
   const textColor = useThemeColor({}, "text");
   const placeholderColor = useThemeColor({ light: "#8E8E93" }, "icon");
@@ -83,6 +87,7 @@ export default function EditClosetItemScreen() {
         setExistingImageUrl(data.image ?? null);
         setCreatedAt(data.created_at ?? null);
         setCategory((data.category as Category | null) ?? null);
+        setOriginalCategory((data.category as Category | null) ?? null);
       })
       .finally(() => setLoadingItem(false));
   }, [id, router]);
@@ -154,6 +159,31 @@ export default function EditClosetItemScreen() {
     setImageCleared(false);
   };
 
+  const runCutout = async () => {
+    const sourceUri = pickedUri ?? (imageCleared ? null : existingImageUrl);
+    if (!sourceUri || busy) return;
+    setLifting(true);
+    try {
+      let localUri = sourceUri;
+      // Existing item images are remote Supabase URLs; the native module needs a local file
+      if (/^https?:/.test(sourceUri)) {
+        const dest = `${FileSystem.cacheDirectory}cutout-src-${Date.now()}.jpg`;
+        const { uri } = await FileSystem.downloadAsync(sourceUri, dest);
+        localUri = uri;
+      }
+      const cutoutUri = await liftSubject(localUri);
+      setPickedUri(cutoutUri);
+      setImageCleared(false);
+    } catch (e) {
+      Alert.alert(
+        "Cutout failed",
+        e instanceof Error ? e.message : "Could not remove the background.",
+      );
+    } finally {
+      setLifting(false);
+    }
+  };
+
   const onSave = async () => {
     const trimmed = name.trim();
     if (!trimmed) {
@@ -182,6 +212,11 @@ export default function EditClosetItemScreen() {
         image = existingImageUrl;
       }
 
+      const enteringDailyStack =
+        category === DAILY_STACK_CATEGORY_NAME && originalCategory !== DAILY_STACK_CATEGORY_NAME;
+      const leavingDailyStack =
+        category !== DAILY_STACK_CATEGORY_NAME && originalCategory === DAILY_STACK_CATEGORY_NAME;
+
       const { error } = await supabase
         .from("closet")
         .update({
@@ -191,6 +226,8 @@ export default function EditClosetItemScreen() {
           wears,
           image,
           category: category ?? null,
+          ...(enteringDailyStack ? { daily_stack_since: new Date().toISOString() } : {}),
+          ...(leavingDailyStack ? { daily_stack_since: null } : {}),
         })
         .eq("id", id);
 
@@ -227,7 +264,7 @@ export default function EditClosetItemScreen() {
   };
 
   const displayUri = pickedUri ?? (imageCleared ? null : existingImageUrl);
-  const busy = saving || deleting || picking;
+  const busy = saving || deleting || picking || lifting;
 
   const inputCompact = [
     styles.inputCompact,
@@ -350,6 +387,21 @@ export default function EditClosetItemScreen() {
                   accessibilityLabel="Edit photo"
                 >
                   <Ionicons name="pencil" size={14} color="#fff" />
+                </Pressable>
+              ) : null}
+              {displayUri && subjectLiftAvailable() ? (
+                <Pressable
+                  onPress={runCutout}
+                  disabled={busy}
+                  style={styles.cutoutBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cut out subject"
+                >
+                  {lifting ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Ionicons name="sparkles" size={14} color="#fff" />
+                  )}
                 </Pressable>
               ) : null}
             </View>
@@ -547,6 +599,17 @@ const styles = StyleSheet.create({
   editImageBtn: {
     position: "absolute",
     right: 6,
+    bottom: 6,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "rgba(0,0,0,0.65)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cutoutBtn: {
+    position: "absolute",
+    left: 6,
     bottom: 6,
     width: 26,
     height: 26,

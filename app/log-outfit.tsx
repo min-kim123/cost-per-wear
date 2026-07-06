@@ -19,6 +19,7 @@ import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
 import {
   chunkPairs,
+  DAILY_STACK_CATEGORY_NAME,
   groupByCategory,
   listCategories,
   type CategoryRow,
@@ -172,9 +173,27 @@ export default function LogOutfitScreen() {
     }, []),
   );
 
+  // Daily Stack items accrue wears automatically and are auto-appended to every
+  // outfit at save time — they aren't manually toggleable here.
+  const dailyStackItemIds = useMemo(
+    () => items.filter((i) => i.category === DAILY_STACK_CATEGORY_NAME).map((i) => i.id),
+    [items],
+  );
+  const dailyStackIdSet = useMemo(() => new Set(dailyStackItemIds), [dailyStackItemIds]);
+
+  const pickableItems = useMemo(
+    () => items.filter((i) => !dailyStackIdSet.has(i.id)),
+    [items, dailyStackIdSet],
+  );
+
+  const visibleSelectedIds = useMemo(
+    () => Array.from(selectedIds).filter((id) => !dailyStackIdSet.has(id)),
+    [selectedIds, dailyStackIdSet],
+  );
+
   const sections = useMemo(
-    () => groupByCategory(items, categories),
-    [items, categories],
+    () => groupByCategory(pickableItems, categories),
+    [pickableItems, categories],
   );
 
   function toggleItem(id: string) {
@@ -230,19 +249,23 @@ export default function LogOutfitScreen() {
   }
 
   async function save() {
-    if (selectedIds.size === 0) {
+    if (visibleSelectedIds.length === 0) {
       Alert.alert("No items selected", "Tap items you wore today.");
       return;
     }
     setSaving(true);
     try {
       const targetDate = typeof date === "string" && date ? date : undefined;
-      const newIds = Array.from(selectedIds);
+      const newIds = visibleSelectedIds;
+      // Daily Stack items are always part of the outfit, appended at the end.
+      const finalIds = [...newIds, ...dailyStackItemIds];
 
       if (isEditing) {
         const originalIds = initialSelectedIdsRef.current;
         const added = newIds.filter((id) => !originalIds.has(id));
-        const removed = [...originalIds].filter((id) => !selectedIds.has(id));
+        const removed = [...originalIds].filter(
+          (id) => !dailyStackIdSet.has(id) && !newIds.includes(id),
+        );
         await Promise.all([
           adjustWears(added, 1),
           adjustWears(removed, -1),
@@ -250,16 +273,16 @@ export default function LogOutfitScreen() {
         await updateOutfit(
           dateKey,
           outfitId as string,
-          newIds,
+          finalIds,
           outfitPhotoUri,
           originalPhotoUri,
         );
       } else {
         await adjustWears(newIds, 1);
         if (outfitPhotoUri) {
-          await saveOutfitWithPhoto(newIds, outfitPhotoUri, targetDate);
+          await saveOutfitWithPhoto(finalIds, outfitPhotoUri, targetDate);
         } else {
-          await saveOutfitItemsOnly(newIds, targetDate);
+          await saveOutfitItemsOnly(finalIds, targetDate);
         }
       }
       router.back();
@@ -356,7 +379,7 @@ export default function LogOutfitScreen() {
       />
 
       <ThemedText style={styles.subtitle}>
-        {dateKey} · {selectedIds.size} item{selectedIds.size !== 1 ? "s" : ""} selected
+        {dateKey} · {visibleSelectedIds.length} item{visibleSelectedIds.length !== 1 ? "s" : ""} selected
       </ThemedText>
 
       {/* Optional outfit photo */}
@@ -473,7 +496,7 @@ export default function LogOutfitScreen() {
         />
       )}
 
-      {selectedIds.size > 0 && (
+      {visibleSelectedIds.length > 0 && (
         <View
           style={[
             styles.footer,
@@ -497,7 +520,7 @@ export default function LogOutfitScreen() {
               <ThemedText style={styles.saveBtnText} lightColor="#fff" darkColor="#fff">
                 {isEditing
                   ? "Save changes"
-                  : `Save outfit (${selectedIds.size} item${selectedIds.size !== 1 ? "s" : ""})`}
+                  : `Save outfit (${visibleSelectedIds.length} item${visibleSelectedIds.length !== 1 ? "s" : ""})`}
               </ThemedText>
             )}
           </Pressable>
@@ -509,7 +532,7 @@ export default function LogOutfitScreen() {
         onPress={() => router.push("/add-closet-item")}
         style={({ pressed }) => [
           styles.addItemFab,
-          { bottom: insets.bottom + (selectedIds.size > 0 ? 88 : 20) },
+          { bottom: insets.bottom + (visibleSelectedIds.length > 0 ? 88 : 20) },
           pressed && { opacity: 0.8 },
         ]}
         accessibilityRole="button"

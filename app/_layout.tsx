@@ -6,6 +6,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { creditDailyStackWears } from "@/lib/categories";
 import { DevTogglesProvider } from "@/lib/dev-toggles";
 import { migrateLocalOutfitsToSupabase } from "@/lib/outfit-storage";
 import { getSupabase } from "@/supabase-client";
@@ -39,6 +40,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
         const inAuthScreen = segmentsRef.current[0] === "auth";
         if (inAuthScreen) router.replace("/(tabs)");
         setChecked(true);
+        creditDailyStackWears().catch(() => {});
       });
       return;
     }
@@ -54,7 +56,10 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
       }
       setChecked(true);
       // Best-effort one-time migration from AsyncStorage to Supabase
-      if (session) migrateLocalOutfitsToSupabase().catch(() => {});
+      if (session) {
+        migrateLocalOutfitsToSupabase().catch(() => {});
+        creditDailyStackWears().catch(() => {});
+      }
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange(
@@ -65,6 +70,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
         } else if (session && inAuthScreen) {
           router.replace("/(tabs)");
           migrateLocalOutfitsToSupabase().catch(() => {});
+          creditDailyStackWears().catch(() => {});
         }
       },
     );
@@ -105,7 +111,7 @@ export default function RootLayout() {
                 />
                 <Stack.Screen
                   name="edit-closet-item"
-                  options={{ title: "Edit item", presentation: "modal" }}
+                  options={{ title: "", presentation: "modal" }}
                 />
                 <Stack.Screen
                   name="web-capture"

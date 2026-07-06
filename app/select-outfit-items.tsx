@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { Stack, useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { ImageSourcePropType } from "react-native";
 import {
   ActivityIndicator,
@@ -15,6 +15,7 @@ import {
 
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
+import { DAILY_STACK_CATEGORY_NAME } from "@/lib/categories";
 import { requestHomeCameraReset } from "@/lib/home-camera-reset";
 import { draftPhotoExists, saveOutfitForToday } from "@/lib/outfit-storage";
 import { getSupabase } from "@/supabase-client";
@@ -26,13 +27,14 @@ type ClothingItem = {
   image: ImageSourcePropType;
   wears: number;
   cost: number;
+  category: string | null;
 };
 
 async function loadClosetItems(): Promise<ClothingItem[]> {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("closet")
-    .select("id, brand, name, cost, wears, image")
+    .select("id, brand, name, cost, wears, image, category")
     .order("created_at", { ascending: false });
   if (error) throw new Error(error.message);
   return (data ?? []).map((row) => {
@@ -44,6 +46,7 @@ async function loadClosetItems(): Promise<ClothingItem[]> {
       cost: typeof row.cost === "number" ? row.cost : parseFloat(row.cost as string) || 0,
       wears: typeof row.wears === "number" ? row.wears : 0,
       image: uri ? { uri } : (require("@/assets/images/image.png") as ImageSourcePropType),
+      category: (row.category as string | null) ?? null,
     };
   });
 }
@@ -101,11 +104,24 @@ export default function SelectOutfitItemsScreen() {
     });
   };
 
+  // Daily Stack items accrue wears automatically and are auto-appended to every
+  // outfit at save time — they aren't manually toggleable here.
+  const dailyStackItemIds = useMemo(
+    () => items.filter((i) => i.category === DAILY_STACK_CATEGORY_NAME).map((i) => i.id),
+    [items],
+  );
+  const dailyStackIdSet = useMemo(() => new Set(dailyStackItemIds), [dailyStackItemIds]);
+  const pickableItems = useMemo(
+    () => items.filter((i) => !dailyStackIdSet.has(i.id)),
+    [items, dailyStackIdSet],
+  );
+
   const onSave = async () => {
     if (!hasDraft) return;
     setSaving(true);
     try {
-      await saveOutfitForToday(Array.from(selected));
+      const selectedIds = Array.from(selected).filter((id) => !dailyStackIdSet.has(id));
+      await saveOutfitForToday([...selectedIds, ...dailyStackItemIds]);
       requestHomeCameraReset();
       router.back();
     } catch (e) {
@@ -141,7 +157,7 @@ export default function SelectOutfitItemsScreen() {
       />
       <ThemedText style={styles.hint}>Tap items to include in today&apos;s outfit.</ThemedText>
       <FlatList
-        data={items}
+        data={pickableItems}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         renderItem={({ item }) => {

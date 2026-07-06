@@ -476,9 +476,13 @@ export default function ClosetScreen() {
         quality: 0.85,
       });
       if (!result.canceled && result.assets.length > 0) {
+        // Crop each photo (free-form) before filling in item details.
         router.push({
-          pathname: "/add-closet-item",
-          params: { capturedUris: JSON.stringify(result.assets.map((a) => a.uri)) },
+          pathname: "/crop-image",
+          params: {
+            uris: JSON.stringify(result.assets.map((a) => a.uri)),
+            returnTo: "add-new",
+          },
         });
       }
     } catch (e) {
@@ -595,31 +599,11 @@ export default function ClosetScreen() {
     );
   }
 
-  return (
-    <ThemedView style={styles.container}>
-      <View style={styles.content}>
-        {loading ? (
-          <ActivityIndicator style={styles.loading} size="large" />
-        ) : (
-          <DraggableFlatList
-            data={draggableSections}
-            keyExtractor={(section) => section.key}
-            keyboardShouldPersistTaps="handled"
-            activationDistance={8}
-            onDragEnd={handleSectionDragEnd}
-            ItemSeparatorComponent={() => <View style={styles.sectionDivider} />}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={handleRefresh}
-              />
-            }
-            contentContainerStyle={[
-              styles.listContent,
-              { paddingBottom: listBottomPad },
-            ]}
-            ListHeaderComponent={
-              <View style={styles.searchHeader}>
+  // DraggableFlatList breaks scrolling on web (its pan gesture wrapper
+  // swallows the scroll), so render a plain FlatList there. Long-press
+  // drag-to-reorder is a native-only affordance anyway.
+  const listHeader = (
+    <View style={styles.searchHeader}>
                 <View style={styles.searchRow}>
                   <View
                     style={[
@@ -696,15 +680,16 @@ export default function ClosetScreen() {
                     </Pressable>
                   )}
                 </View>
-                {loadError ? (
-                  <ThemedText style={styles.errorBanner}>
-                    {loadError}
-                  </ThemedText>
-                ) : null}
-              </View>
-            }
-            ListEmptyComponent={
-              loadError || sections.length > 0 ? null : items.length > 0 ? (
+      {loadError ? (
+        <ThemedText style={styles.errorBanner}>
+          {loadError}
+        </ThemedText>
+      ) : null}
+    </View>
+  );
+
+  const listEmpty =
+    loadError || sections.length > 0 ? null : items.length > 0 ? (
                 <ThemedText style={styles.emptySearch}>
                   No items match your search.
                 </ThemedText>
@@ -728,9 +713,48 @@ export default function ClosetScreen() {
                       </ThemedText>
                     </Pressable>
                   )}
-                </View>
-              )
+      </View>
+    );
+
+  return (
+    <ThemedView style={styles.container}>
+      <View style={styles.content}>
+        {loading ? (
+          <ActivityIndicator style={styles.loading} size="large" />
+        ) : Platform.OS === "web" ? (
+          <FlatList
+            data={sections}
+            keyExtractor={(section) => section.key}
+            keyboardShouldPersistTaps="handled"
+            ItemSeparatorComponent={() => <View style={styles.sectionDivider} />}
+            contentContainerStyle={[
+              styles.listContent,
+              { paddingBottom: listBottomPad },
+            ]}
+            ListHeaderComponent={listHeader}
+            ListEmptyComponent={listEmpty}
+            renderItem={({ item: section }) => renderSection(section)}
+          />
+        ) : (
+          <DraggableFlatList
+            data={draggableSections}
+            keyExtractor={(section) => section.key}
+            keyboardShouldPersistTaps="handled"
+            activationDistance={8}
+            onDragEnd={handleSectionDragEnd}
+            ItemSeparatorComponent={() => <View style={styles.sectionDivider} />}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+              />
             }
+            contentContainerStyle={[
+              styles.listContent,
+              { paddingBottom: listBottomPad },
+            ]}
+            ListHeaderComponent={listHeader}
+            ListEmptyComponent={listEmpty}
             renderItem={({ item: section, drag, isActive }) =>
               renderSection(section, { drag, isActive })
             }
@@ -748,104 +772,109 @@ export default function ClosetScreen() {
         )}
         {fabOpen ? (
           <>
-            {hasGmailAccess && (
-              <Pressable
-                onPress={syncGmail}
-                disabled={syncing}
-                style={({ pressed }) => [
-                  styles.fab,
-                  styles.fabRect,
-                  styles.fabRectOutline,
-                  { bottom: insets.bottom + 304, right: 16 },
-                  pressed && styles.fabPressed,
-                  syncing && styles.fabDisabled,
-                ]}
-                accessibilityRole="button"
-                accessibilityLabel="Sync Gmail"
-              >
-                {syncing ? (
-                  <ActivityIndicator color="#000" />
-                ) : (
-                  <ThemedText style={styles.fabRectLabel}>
-                    sync gmail
-                  </ThemedText>
-                )}
-              </Pressable>
-            )}
-            <PasteImageButton
-              size={{ width: 110, height: 60 }}
-              style={{
-                position: "absolute",
-                bottom: insets.bottom + 232,
-                right: 16,
-                zIndex: 1,
-                borderWidth: 1.5,
-                borderColor: "#000",
-              }}
-              backgroundColor="#fff"
-              foregroundColor="#000"
-              onBeforePaste={() => setFabOpen(false)}
-              onImage={openAddItemWithClipboardImage}
-            >
-              <ThemedText style={styles.fabRectLabel}>paste</ThemedText>
-            </PasteImageButton>
-            <Pressable
-              onPress={() => {
-                setFabOpen(false);
-                router.push("/web-capture");
-              }}
-              style={({ pressed }) => [
-                styles.fab,
-                styles.fabRect,
-                styles.fabRectOutline,
-                { bottom: insets.bottom + 160, right: 16 },
-                pressed && styles.fabPressed,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Capture item from the web"
-            >
-              <ThemedText style={styles.fabRectLabel}>from web</ThemedText>
-            </Pressable>
-            <Pressable
-              onPress={addFromLibrary}
-              style={({ pressed }) => [
-                styles.fab,
-                styles.fabRect,
-                styles.fabRectOutline,
-                { bottom: insets.bottom + 88, right: 16 },
-                pressed && styles.fabPressed,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Add items from library"
-            >
-              <ThemedText style={styles.fabRectLabel}>library</ThemedText>
-            </Pressable>
-            <Pressable
-              onPress={addFromCamera}
-              style={[
-                styles.fab,
-                styles.fabRect,
-                styles.fabRectOutline,
-                { bottom: insets.bottom + 16, right: 16 },
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Add items with camera"
-            >
-              <ThemedText style={styles.fabRectLabel}>camera</ThemedText>
-            </Pressable>
             <Pressable
               onPress={() => setFabOpen(false)}
               style={styles.fabScrim}
               accessibilityRole="button"
               accessibilityLabel="Close menu"
             />
+            <View
+              style={[styles.fabMenu, { bottom: insets.bottom + 76, right: 16 }]}
+            >
+              {hasGmailAccess && (
+                <Pressable
+                  onPress={syncGmail}
+                  disabled={syncing}
+                  style={({ pressed }) => [
+                    styles.fabMenuItem,
+                    pressed && styles.fabPressed,
+                    syncing && styles.fabDisabled,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Sync Gmail"
+                >
+                  {syncing ? (
+                    <ActivityIndicator color="#000" />
+                  ) : (
+                    <>
+                      <Ionicons name="mail-outline" size={18} color="#000" />
+                      <ThemedText style={styles.fabMenuLabel}>
+                        sync gmail
+                      </ThemedText>
+                    </>
+                  )}
+                </Pressable>
+              )}
+              <PasteImageButton
+                size={{ width: 116, height: 48 }}
+                style={styles.fabMenuShadow}
+                backgroundColor="#fff"
+                foregroundColor="#000"
+                onBeforePaste={() => setFabOpen(false)}
+                onImage={openAddItemWithClipboardImage}
+              >
+                <Ionicons name="clipboard-outline" size={18} color="#000" />
+                <ThemedText style={styles.fabMenuLabel}>paste</ThemedText>
+              </PasteImageButton>
+              <Pressable
+                onPress={() => {
+                  setFabOpen(false);
+                  router.push("/web-capture");
+                }}
+                style={({ pressed }) => [
+                  styles.fabMenuItem,
+                  pressed && styles.fabPressed,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Capture item from the web"
+              >
+                <Ionicons name="globe-outline" size={18} color="#000" />
+                <ThemedText style={styles.fabMenuLabel}>from web</ThemedText>
+              </Pressable>
+              <Pressable
+                onPress={addFromLibrary}
+                style={({ pressed }) => [
+                  styles.fabMenuItem,
+                  pressed && styles.fabPressed,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Add items from library"
+              >
+                <Ionicons name="images-outline" size={18} color="#000" />
+                <ThemedText style={styles.fabMenuLabel}>library</ThemedText>
+              </Pressable>
+              <Pressable
+                onPress={addFromCamera}
+                style={({ pressed }) => [
+                  styles.fabMenuItem,
+                  pressed && styles.fabPressed,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Add items with camera"
+              >
+                <Ionicons name="camera-outline" size={18} color="#000" />
+                <ThemedText style={styles.fabMenuLabel}>camera</ThemedText>
+              </Pressable>
+            </View>
+            <Pressable
+              onPress={() => setFabOpen(false)}
+              style={({ pressed }) => [
+                styles.fab,
+                { bottom: insets.bottom + 4, right: 16 },
+                pressed && styles.fabPressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Close menu"
+            >
+              <Ionicons name="close" size={28} color="#fff" />
+            </Pressable>
           </>
         ) : (
           <Pressable
             onPress={() => setFabOpen(true)}
             style={({ pressed }) => [
               styles.fab,
-              { bottom: insets.bottom + 16, right: 16 },
+              { bottom: insets.bottom + 4, right: 16 },
               pressed && styles.fabPressed,
             ]}
             accessibilityRole="button"
@@ -1229,42 +1258,59 @@ const styles = StyleSheet.create({
     position: "absolute",
     width: 60,
     height: 60,
-    borderRadius: 25,
-    backgroundColor: "rgba(0,0,0,0.2)",
+    borderRadius: 30,
+    backgroundColor: "rgba(0,0,0,0.35)",
     alignItems: "center",
     justifyContent: "center",
     zIndex: 1,
+    shadowColor: "#000",
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
   },
   fabPressed: {
-    opacity: 0.88,
-  },
-  fabSecondary: {
-    backgroundColor: "#444",
+    opacity: 0.85,
+    transform: [{ scale: 0.97 }],
   },
   fabDisabled: {
     opacity: 0.45,
   },
-  fabCountLabel: {
-    fontSize: 18,
-    fontWeight: "700",
+  fabMenu: {
+    position: "absolute",
+    alignItems: "flex-end",
+    gap: 12,
+    zIndex: 1,
   },
-  fabRect: {
-    width: "auto",
-    paddingHorizontal: 20,
-    borderRadius: 22,
-  },
-  fabRectOutline: {
+  fabMenuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    height: 48,
+    paddingHorizontal: 18,
+    borderRadius: 24,
     backgroundColor: "#fff",
-    borderWidth: 1.5,
-    borderColor: "#000",
+    shadowColor: "#000",
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
   },
-  fabRectLabel: {
+  fabMenuShadow: {
+    shadowColor: "#000",
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  fabMenuLabel: {
     fontSize: 15,
     fontWeight: "600",
     color: "#000",
   },
   fabScrim: {
     ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.2)",
     zIndex: 0,
   },
   emptySearch: {

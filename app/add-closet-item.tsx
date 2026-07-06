@@ -21,7 +21,8 @@ import { CategoryPicker, type Category } from "@/components/category-picker";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
-import { listCategories } from "@/lib/categories";
+import { DAILY_STACK_CATEGORY_NAME, listCategories } from "@/lib/categories";
+import { onImagesCaptured } from "@/lib/image-capture-bridge";
 import { liftSubject, subjectLiftAvailable } from "@/lib/subject-lift";
 import { getSupabase } from "@/supabase-client";
 
@@ -140,6 +141,11 @@ export default function AddClosetItemScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capturedUri, capturedUris]);
 
+  // Picks up the cropped photos when the crop-image screen navigates back to us
+  useEffect(() => {
+    return onImagesCaptured((uris) => startEditingWithUris(uris));
+  }, []);
+
   // ── Photo pickers ─────────────────────────────────────────────────────────
   const pickFromLibrary = async () => {
     if (picking) return;
@@ -156,7 +162,14 @@ export default function AddClosetItemScreen() {
         quality: 0.85,
       });
       if (!result.canceled && result.assets.length > 0) {
-        startEditingWithUris(result.assets.map((a) => a.uri));
+        // Crop each photo (free-form) first; results come back via onImagesCaptured.
+        router.push({
+          pathname: "/crop-image",
+          params: {
+            uris: JSON.stringify(result.assets.map((a) => a.uri)),
+            returnTo: "add",
+          },
+        });
       }
     } catch (e) {
       Alert.alert("Error", e instanceof Error ? e.message : "Could not open library.");
@@ -239,6 +252,8 @@ export default function AddClosetItemScreen() {
           wears,
           image,
           category: item.category ?? null,
+          daily_stack_since:
+            item.category === DAILY_STACK_CATEGORY_NAME ? new Date().toISOString() : null,
           user_id: user?.id,
         });
       }
