@@ -1,4 +1,3 @@
-import { uploadClosetItemImage } from "@/lib/closet-upload";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
@@ -10,6 +9,7 @@ import {
   Keyboard,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   TextInput,
   View,
@@ -21,10 +21,10 @@ import { CategoryPicker, type Category } from "@/components/category-picker";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
-import { DAILY_STACK_CATEGORY_NAME, listCategories } from "@/lib/categories";
+import { listCategories } from "@/lib/categories";
+import { enqueueClosetSaves } from "@/lib/closet-save-queue";
 import { onImagesCaptured } from "@/lib/image-capture-bridge";
 import { liftSubject, subjectLiftAvailable } from "@/lib/subject-lift";
-import { getSupabase } from "@/supabase-client";
 
 const PICKER_OPTIONS: ImagePicker.ImagePickerOptions = {
   mediaTypes: ["images"],
@@ -44,9 +44,11 @@ type BulkItem = {
 };
 
 // ── Phase types ──────────────────────────────────────────────────────────────
-// "pick"      → initial screen: camera / library buttons
-// "capturing" → camera multi-shot phase
-// "editing"   → fill in details for each photo
+// "pick"       → initial screen: camera / library buttons
+// "capturing"  → camera multi-shot phase
+// "processing" → full-screen wait while backgrounds are removed
+// "review"     → check the cutouts; remove any that came out wrong
+// "editing"    → fill in details for each photo
 
 export default function AddClosetItemScreen() {
   const router = useRouter();
@@ -55,12 +57,13 @@ export default function AddClosetItemScreen() {
     capturedUris?: string;
   }>();
 
-  const [phase, setPhase] = useState<"pick" | "capturing" | "editing">("pick");
+  const [phase, setPhase] = useState<
+    "pick" | "capturing" | "processing" | "review" | "editing"
+  >("pick");
   const [bulkItems, setBulkItems] = useState<BulkItem[]>([]);
   const [bulkIndex, setBulkIndex] = useState(0);
   const [pendingUris, setPendingUris] = useState<string[]>([]);
   const [picking, setPicking] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [categories, setCategories] = useState<Category[]>([]);
 
   const costRef = useRef<TextInput>(null);
@@ -97,29 +100,50 @@ export default function AddClosetItemScreen() {
       })),
     );
     setBulkIndex(0);
-    setPhase("editing");
 
-    if (canLiftSubject) {
-      uris.forEach((originalUri, index) => {
-        liftSubject(originalUri)
-          .then((cutoutUri) => {
-            setBulkItems((prev) => {
-              if (prev[index]?.uri !== originalUri) return prev;
-              const next = [...prev];
-              next[index] = { ...next[index], uri: cutoutUri, processingBg: false };
-              return next;
-            });
-          })
-          .catch(() => {
-            setBulkItems((prev) => {
-              if (prev[index]?.uri !== originalUri) return prev;
-              const next = [...prev];
-              next[index] = { ...next[index], processingBg: false };
-              return next;
-            });
-          });
-      });
+    if (!canLiftSubject) {
+      setPhase("editing");
+      return;
     }
+
+    // Remove backgrounds up front behind a progress screen, then let the user
+    // review the cutouts before filling in details.
+    setPhase("processing");
+    uris.forEach((originalUri, index) => {
+      liftSubject(originalUri)
+        .then((cutoutUri) => {
+          setBulkItems((prev) => {
+            if (prev[index]?.uri !== originalUri) return prev;
+            const next = [...prev];
+            next[index] = { ...next[index], uri: cutoutUri, processingBg: false };
+            return next;
+          });
+        })
+        .catch(() => {
+          setBulkItems((prev) => {
+            if (prev[index]?.uri !== originalUri) return prev;
+            const next = [...prev];
+            next[index] = { ...next[index], processingBg: false };
+            return next;
+          });
+        });
+    });
+  }
+
+  useEffect(() => {
+    if (
+      phase === "processing" &&
+      bulkItems.length > 0 &&
+      bulkItems.every((item) => !item.processingBg)
+    ) {
+      setPhase("review");
+    }
+  }, [phase, bulkItems]);
+
+  function removeReviewItem(index: number) {
+    const next = bulkItems.filter((_, i) => i !== index);
+    setBulkItems(next);
+    if (next.length === 0) setPhase("pick");
   }
 
   // Arrived here with photo(s) already picked — either a single image from the
@@ -138,7 +162,6 @@ export default function AddClosetItemScreen() {
         // ignore malformed param
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capturedUri, capturedUris]);
 
   // Picks up the cropped photos when the crop-image screen navigates back to us
@@ -224,7 +247,9 @@ export default function AddClosetItemScreen() {
   };
 
   // ── Save ──────────────────────────────────────────────────────────────────
-  const onNext = async () => {
+  // Uploads run in the background (lib/closet-save-queue) so the modal can
+  // dismiss immediately instead of blocking on slow image uploads.
+  const onNext = () => {
     const current = bulkItems[bulkIndex];
     if (!current.name.trim()) {
       Alert.alert("Name required", "Enter a name for this item.");
@@ -234,35 +259,24 @@ export default function AddClosetItemScreen() {
       setBulkIndex((i) => i + 1);
       return;
     }
-    setSaving(true);
-    try {
-      const supabase = getSupabase();
-      const { data: { user } } = await supabase.auth.getUser();
-      for (const item of bulkItems) {
-        if (!item.name.trim()) continue;
-        const parsed = parseFloat(item.costText.replace(/,/g, ""));
-        const cost = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-        const parsedWears = parseInt(item.wearsText, 10);
-        const wears = Number.isFinite(parsedWears) && parsedWears >= 0 ? parsedWears : 0;
-        const image = item.uri ? await uploadClosetItemImage(item.uri, user?.id) : null;
-        await supabase.from("closet").insert({
-          name: item.name.trim(),
-          brand: item.brand.trim(),
-          cost: Number(cost),
-          wears,
-          image,
-          category: item.category ?? null,
-          daily_stack_since:
-            item.category === DAILY_STACK_CATEGORY_NAME ? new Date().toISOString() : null,
-          user_id: user?.id,
-        });
-      }
-      router.back();
-    } catch (e) {
-      Alert.alert("Could not save", e instanceof Error ? e.message : "Unknown error");
-    } finally {
-      setSaving(false);
-    }
+    enqueueClosetSaves(
+      bulkItems
+        .filter((item) => item.name.trim())
+        .map((item) => {
+          const parsed = parseFloat(item.costText.replace(/,/g, ""));
+          const parsedWears = parseInt(item.wearsText, 10);
+          return {
+            name: item.name.trim(),
+            brand: item.brand.trim(),
+            cost: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0,
+            wears:
+              Number.isFinite(parsedWears) && parsedWears >= 0 ? parsedWears : 0,
+            localUri: item.uri || null,
+            category: item.category ?? null,
+          };
+        }),
+    );
+    router.back();
   };
 
   // ── Phase: capturing (camera multi-shot) ──────────────────────────────────
@@ -305,6 +319,74 @@ export default function AddClosetItemScreen() {
         </Pressable>
         <Pressable onPress={() => { setPhase("pick"); setPendingUris([]); }} style={styles.cancelLink}>
           <ThemedText type="link">Cancel</ThemedText>
+        </Pressable>
+      </ThemedView>
+    );
+  }
+
+  // ── Phase: processing (background removal in progress) ───────────────────
+  if (phase === "processing") {
+    const done = bulkItems.filter((item) => !item.processingBg).length;
+    return (
+      <ThemedView style={styles.processingPage}>
+        <ActivityIndicator size="large" />
+        <ThemedText type="subtitle" style={styles.processingTitle}>
+          Removing backgrounds…
+        </ThemedText>
+        <ThemedText style={styles.processingSub}>
+          {bulkItems.length > 1
+            ? `${done} of ${bulkItems.length} photos done`
+            : "This takes a few seconds"}
+        </ThemedText>
+      </ThemedView>
+    );
+  }
+
+  // ── Phase: review cutouts ─────────────────────────────────────────────────
+  if (phase === "review") {
+    return (
+      <ThemedView style={styles.reviewPage}>
+        <ThemedText type="subtitle" style={styles.reviewTitle}>
+          Check the results
+        </ThemedText>
+        <ThemedText style={styles.reviewSubtitle}>
+          Remove any photo where the background didn’t come out right.
+        </ThemedText>
+        <ScrollView contentContainerStyle={styles.reviewGrid}>
+          {bulkItems.map((item, index) => (
+            <View key={item.uri} style={styles.reviewCell}>
+              <Image
+                source={{ uri: item.uri }}
+                style={styles.reviewImage}
+                contentFit="contain"
+              />
+              <Pressable
+                onPress={() => removeReviewItem(index)}
+                hitSlop={8}
+                style={styles.reviewRemoveBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Remove this photo"
+              >
+                <Ionicons name="close" size={16} color="#fff" />
+              </Pressable>
+            </View>
+          ))}
+        </ScrollView>
+        <Pressable
+          onPress={() => { setBulkIndex(0); setPhase("editing"); }}
+          style={({ pressed }) => [styles.nextBtn, pressed && { opacity: 0.85 }]}
+          accessibilityRole="button"
+          accessibilityLabel="Fill in details"
+        >
+          <ThemedText style={styles.nextBtnLabel} lightColor="#fff" darkColor="#fff">
+            Fill in details
+          </ThemedText>
+        </Pressable>
+        <Pressable
+          onPress={() => { setBulkItems([]); setPhase("pick"); }}
+          style={styles.cancelLink}
+        >
+          <ThemedText type="link" style={styles.reviewCancel}>Cancel</ThemedText>
         </Pressable>
       </ThemedView>
     );
@@ -362,7 +444,6 @@ export default function AddClosetItemScreen() {
               <BrandInput
                 value={current.brand}
                 onChange={(v) => updateField("brand", v)}
-                editable={!saving}
               />
               <TextInput
                 accessibilityLabel="Item name"
@@ -371,7 +452,6 @@ export default function AddClosetItemScreen() {
                 value={current.name}
                 onChangeText={(v) => updateField("name", v)}
                 style={inputCompact}
-                editable={!saving}
                 returnKeyType="next"
                 onSubmitEditing={() => costRef.current?.focus()}
               />
@@ -384,7 +464,6 @@ export default function AddClosetItemScreen() {
                 onChangeText={(v) => updateField("costText", v)}
                 keyboardType="numbers-and-punctuation"
                 style={inputCompact}
-                editable={!saving}
                 returnKeyType="next"
                 onSubmitEditing={() => wearsRef.current?.focus()}
               />
@@ -397,7 +476,6 @@ export default function AddClosetItemScreen() {
                 onChangeText={(v) => updateField("wearsText", v.replace(/[^0-9]/g, ""))}
                 keyboardType="number-pad"
                 style={inputCompact}
-                editable={!saving}
                 returnKeyType="done"
                 onSubmitEditing={Keyboard.dismiss}
               />
@@ -409,29 +487,24 @@ export default function AddClosetItemScreen() {
             onChange={(cat) => updateField("category", cat)}
             categories={categories}
             nullable
-            disabled={saving}
           />
 
           <Pressable
             onPress={onNext}
-            disabled={saving || current.processingBg}
+            disabled={current.processingBg}
             style={({ pressed }) => [
               styles.nextBtn,
               pressed && { opacity: 0.85 },
-              (saving || current.processingBg) && { opacity: 0.6 },
+              current.processingBg && { opacity: 0.6 },
             ]}
           >
-            {saving ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <ThemedText style={styles.nextBtnLabel} lightColor="#fff" darkColor="#fff">
-                {isLast
-                  ? bulkItems.length > 1
-                    ? `Save all ${bulkItems.length} items`
-                    : "Save item"
-                  : "Next →"}
-              </ThemedText>
-            )}
+            <ThemedText style={styles.nextBtnLabel} lightColor="#fff" darkColor="#fff">
+              {isLast
+                ? bulkItems.length > 1
+                  ? `Save all ${bulkItems.length} items`
+                  : "Save item"
+                : "Next →"}
+            </ThemedText>
           </Pressable>
         </ThemedView>
       </KeyboardAwareScrollView>
@@ -561,6 +634,62 @@ const styles = StyleSheet.create({
   },
   captureStartLabel: { fontSize: 16, fontWeight: "700" },
   cancelLink: { paddingVertical: 8 },
+
+  // ── Processing page ────────────────────────────────────────────────
+  processingPage: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 14,
+    padding: 32,
+  },
+  processingTitle: { textAlign: "center" },
+  processingSub: { textAlign: "center", opacity: 0.55, fontSize: 14 },
+
+  // ── Review page ────────────────────────────────────────────────────
+  reviewPage: {
+    flex: 1,
+    padding: 16,
+    paddingBottom: 24,
+    gap: 8,
+  },
+  reviewTitle: { textAlign: "center" },
+  reviewSubtitle: {
+    textAlign: "center",
+    opacity: 0.55,
+    fontSize: 14,
+    marginBottom: 8,
+  },
+  reviewGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+    justifyContent: "center",
+    paddingBottom: 12,
+  },
+  reviewCell: {
+    width: "47%",
+    aspectRatio: 3 / 4,
+    borderRadius: 12,
+    backgroundColor: "rgba(128,128,128,0.15)",
+    overflow: "hidden",
+  },
+  reviewImage: {
+    width: "100%",
+    height: "100%",
+  },
+  reviewRemoveBtn: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  reviewCancel: { textAlign: "center" },
 
   // ── Wizard page ────────────────────────────────────────────────────
   wizardPage: { flex: 1, padding: 16, paddingBottom: 24, gap: 10 },

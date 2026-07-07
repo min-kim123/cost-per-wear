@@ -6,10 +6,11 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { ClosetSaveIndicator } from "@/components/closet-save-indicator";
 import { creditDailyStackWears } from "@/lib/categories";
 import { DevTogglesProvider } from "@/lib/dev-toggles";
 import { migrateLocalOutfitsToSupabase } from "@/lib/outfit-storage";
-import { getSupabase } from "@/supabase-client";
+import { getSupabase } from "@/lib/supabase-client";
 
 export const unstable_settings = {
   anchor: "(tabs)",
@@ -93,15 +94,6 @@ export default function RootLayout() {
                 <Stack.Screen name="auth" options={{ headerShown: false }} />
                 <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
                 <Stack.Screen
-                  name="modal"
-                  options={{ presentation: "modal", title: "Modal" }}
-                />
-                <Stack.Screen name="closet" options={{ title: "closet" }} />
-                <Stack.Screen
-                  name="calendar"
-                  options={{ title: "Calendar", animation: "slide_from_left" }}
-                />
-                <Stack.Screen
                   name="select-outfit-items"
                   options={{ title: "Today's outfit", presentation: "modal" }}
                 />
@@ -111,7 +103,7 @@ export default function RootLayout() {
                 />
                 <Stack.Screen
                   name="edit-closet-item"
-                  options={{ title: "", presentation: "modal" }}
+                  options={{ presentation: "modal", headerShown: false }}
                 />
                 <Stack.Screen
                   name="web-capture"
@@ -124,6 +116,7 @@ export default function RootLayout() {
                 <Stack.Screen name="day-outfits" options={{ headerShown: false }} />
               </Stack>
             </AuthGuard>
+            <ClosetSaveIndicator />
           </DevTogglesProvider>
         </SafeAreaView>
         <StatusBar style="dark" />

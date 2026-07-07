@@ -1,4 +1,4 @@
-import { getSupabase } from "@/supabase-client";
+import { getSupabase } from "@/lib/supabase-client";
 import * as AuthSession from "expo-auth-session";
 import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
@@ -58,11 +58,8 @@ export default function ConnectGmailScreen() {
           }
           const refreshToken = sessionData.session?.provider_refresh_token;
           const accessToken = sessionData.session?.provider_token;
-          console.log("REFRESH TOKEN", refreshToken);
-          console.log("ACCESS TOKEN", accessToken);
 
           if (refreshToken) {
-            console.log("STORING GMAIL TOKEN");
             const { error: fnError } = await supabase.functions.invoke(
               "store-gmail-token",
               {
@@ -86,24 +83,20 @@ export default function ConnectGmailScreen() {
             } = await supabase.auth.getSession();
 
             if (session?.access_token) {
-              console.log("INVOKING GMAIL SCAN PIPELINE...");
               try {
-                const { data, error } = await supabase.functions.invoke("initial-gmail-scan", {
+                const { error } = await supabase.functions.invoke("initial-gmail-scan", {
                   headers: {
                     Authorization: `Bearer ${session.access_token}`,
                   },
                 });
-                
+
                 if (error) {
                   console.error("Edge function returned an error status:", error);
-                } else {
-                  console.log("Edge function responded successfully:", data);
                 }
               } catch (e) {
                 console.error("Network request failed to reach server:", e);
               }
             }
-            console.log("INITIAL GMAIL SCAN FIRED");
           }
           // router.replace("/(tabs)");
         }

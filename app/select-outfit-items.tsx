@@ -18,7 +18,7 @@ import { ThemedView } from "@/components/themed-view";
 import { DAILY_STACK_CATEGORY_NAME } from "@/lib/categories";
 import { requestHomeCameraReset } from "@/lib/home-camera-reset";
 import { draftPhotoExists, saveOutfitForToday } from "@/lib/outfit-storage";
-import { getSupabase } from "@/supabase-client";
+import { getSupabase } from "@/lib/supabase-client";
 
 type ClothingItem = {
   id: string;

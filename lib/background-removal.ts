@@ -1,7 +1,7 @@
 import * as FileSystem from "expo-file-system/legacy";
 import { Platform } from "react-native";
 
-import { getSupabase } from "@/supabase-client";
+import { getSupabase } from "@/lib/supabase-client";
 
 async function readAsBase64(uri: string): Promise<string> {
   if (Platform.OS === "web") {

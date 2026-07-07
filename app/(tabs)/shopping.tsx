@@ -1,4 +1,3 @@
-import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useState } from "react";
@@ -10,7 +9,7 @@ import { type Category } from "@/components/category-picker";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
-import { getSupabase } from "@/supabase-client";
+import { getSupabase } from "@/lib/supabase-client";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

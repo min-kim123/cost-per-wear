@@ -12,10 +12,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
-import { useColorScheme } from "@/hooks/use-color-scheme";
 import { getSnapshots, upsertTodaySnapshot } from "@/lib/cpw-history";
 import { getOutfitsMap, getTodayDateKey } from "@/lib/outfit-storage";
-import { getSupabase } from "@/supabase-client";
+import { getSupabase } from "@/lib/supabase-client";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -460,8 +459,6 @@ function LineChart({
 
 export default function DataScreen() {
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === "dark";
 
   const [items, setItems] = useState<ClosetItem[]>([]);
   const [denseSeries, setDenseSeries] = useState<DailyPoint[]>([]);
@@ -508,11 +505,11 @@ export default function DataScreen() {
   const totalWears = items.reduce((s, it) => s + it.wears, 0);
   const avgCPW     = items.length > 0 ? currentTotalCPW / items.length : 0;
 
-  const cardBg    = isDark ? "#222" : "#f5f5f5";
-  const chartBg   = isDark ? "#1a1a1a" : "#f9f9f9";
-  const gridColor = isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.08)";
-  const labelColor = isDark ? "#888" : "#aaa";
-  const textColor  = isDark ? "#fff" : "#111";
+  const cardBg    = "#f5f5f5";
+  const chartBg   = "#f9f9f9";
+  const gridColor = "rgba(0,0,0,0.08)";
+  const labelColor = "#aaa";
+  const textColor  = "#111";
 
   return (
     <ThemedView style={{ flex: 1 }}>
@@ -564,9 +561,7 @@ export default function DataScreen() {
                       style={[
                         styles.rangeButton,
                         selected && {
-                          backgroundColor: isDark
-                            ? "rgba(255,255,255,0.14)"
-                            : "rgba(0,0,0,0.08)",
+                          backgroundColor: "rgba(0,0,0,0.08)",
                         },
                       ]}
                       hitSlop={4}

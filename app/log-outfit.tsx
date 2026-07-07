@@ -31,7 +31,7 @@ import {
   updateOutfit,
   getTodayDateKey,
 } from "@/lib/outfit-storage";
-import { getSupabase } from "@/supabase-client";
+import { getSupabase } from "@/lib/supabase-client";
 
 type ClosetItem = {
   id: string;
@@ -96,10 +96,6 @@ export default function LogOutfitScreen() {
   const [loadingOutfit, setLoadingOutfit] = useState(isEditing);
 
   const textColor = useThemeColor({}, "text");
-  const cardBackground = useThemeColor(
-    { light: "#ffffff", dark: "#1c1c1e" },
-    "background",
-  );
   const placeholderColor = useThemeColor({ light: "#8E8E93" }, "icon");
   const borderColor = useThemeColor({ light: "#C6C6C8" }, "icon");
   const inputBackground = useThemeColor({ light: "#F2F2F7" }, "background");

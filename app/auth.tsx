@@ -1,4 +1,4 @@
-import { getSupabase } from "@/supabase-client";
+import { getSupabase } from "@/lib/supabase-client";
 import * as AuthSession from "expo-auth-session";
 import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
@@ -84,7 +84,6 @@ export default function AuthScreen() {
     const { data: listener } = supabase.auth.onAuthStateChange(
       (event, session) => {
         if (event === "SIGNED_IN" && session) {
-          console.log("User signed in → redirecting");
           router.replace("/connect-gmail");
         }
       }

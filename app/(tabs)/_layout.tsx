@@ -41,9 +41,8 @@ export default function TabLayout() {
   const insets = useSafeAreaInsets();
   const tint = Colors[colorScheme ?? "light"].tint;
   const iconDefault = Colors[colorScheme ?? "light"].tabIconDefault;
-  const tabBarBg = colorScheme === "dark" ? "#1c1c1e" : "#fff";
-  const dividerColor =
-    colorScheme === "dark" ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)";
+  const tabBarBg = "#fff";
+  const dividerColor = "rgba(0,0,0,0.12)";
 
   const { isHidden } = useDevTabVisibility();
 

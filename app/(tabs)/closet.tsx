@@ -25,6 +25,7 @@ import DraggableFlatList, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { type Category } from "@/components/category-picker";
+import { OutfitBoard } from "@/components/outfit-board";
 import { PasteImageButton } from "@/components/paste-image-button";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
@@ -40,8 +41,9 @@ import {
   type CategorySection,
 } from "@/lib/categories";
 import { writeClipboardImageToLocalUri } from "@/lib/clipboard-image";
+import { subscribeClosetSaves } from "@/lib/closet-save-queue";
 import { useDevToggle } from "@/lib/dev-toggles";
-import { getSupabase } from "@/supabase-client";
+import { getSupabase } from "@/lib/supabase-client";
 
 type ClothingItem = {
   id: string;
@@ -111,15 +113,6 @@ type SortKey =
   | "wears_asc"
   | "wears_desc";
 
-const SORT_OPTIONS: { key: SortKey; label: string }[] = [
-  { key: "cpw_asc", label: "Cost/wear: low → high" },
-  { key: "cpw_desc", label: "Cost/wear: high → low" },
-  { key: "cost_asc", label: "Cost: low → high" },
-  { key: "cost_desc", label: "Cost: high → low" },
-  { key: "wears_asc", label: "Wears: low → high" },
-  { key: "wears_desc", label: "Wears: high → low" },
-];
-
 type MetricDisplay = "cpw" | "wears" | "cost";
 
 const METRIC_OPTIONS: { key: MetricDisplay; label: string }[] = [
@@ -185,6 +178,15 @@ export default function ClosetScreen() {
   const [deletingCategoryId, setDeletingCategoryId] = useState<string | null>(null);
   const [addingCategory, setAddingCategory] = useState(false);
   const newCategoryInputRef = useRef<TextInput>(null);
+  const [footerAdding, setFooterAdding] = useState(false);
+  const [footerCategoryName, setFooterCategoryName] = useState("");
+  const footerInputRef = useRef<TextInput>(null);
+  const [outfitMode, setOutfitMode] = useState(false);
+  const [outfitSelectedIds, setOutfitSelectedIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [boardItems, setBoardItems] = useState<ClothingItem[]>([]);
+  const [boardExpanded, setBoardExpanded] = useState(false);
 
   useEffect(() => {
     if (addingCategory) {
@@ -192,6 +194,13 @@ export default function ClosetScreen() {
       return () => clearTimeout(t);
     }
   }, [addingCategory]);
+
+  useEffect(() => {
+    if (footerAdding) {
+      const t = setTimeout(() => footerInputRef.current?.focus(), 50);
+      return () => clearTimeout(t);
+    }
+  }, [footerAdding]);
 
   const loadCategories = useCallback(() => {
     return listCategories()
@@ -281,6 +290,20 @@ export default function ClosetScreen() {
     }, [loadItems, loadCategories, checkGmailAccess]),
   );
 
+  // Items save in the background after the add-item modal dismisses; refresh
+  // as each one lands so they appear without a manual pull-to-refresh.
+  const lastSaveDone = useRef(0);
+  useEffect(
+    () =>
+      subscribeClosetSaves((s) => {
+        if (s.done !== lastSaveDone.current) {
+          lastSaveDone.current = s.done;
+          if (s.done > 0) loadItems({ silent: true });
+        }
+      }),
+    [loadItems],
+  );
+
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
     loadItems({ silent: true });
@@ -305,6 +328,27 @@ export default function ClosetScreen() {
   function cancelAddCategory() {
     setAddingCategory(false);
     setNewCategoryName("");
+  }
+
+  async function handleFooterAddCategory() {
+    const name = footerCategoryName.trim();
+    if (!name || savingCategory) return;
+    setSavingCategory(true);
+    try {
+      await addCategory(name);
+      setFooterCategoryName("");
+      setFooterAdding(false);
+      await loadCategories();
+    } catch (e) {
+      Alert.alert("Could not add category", e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setSavingCategory(false);
+    }
+  }
+
+  function cancelFooterAddCategory() {
+    setFooterAdding(false);
+    setFooterCategoryName("");
   }
 
   function closeCategorySheet() {
@@ -421,6 +465,48 @@ export default function ClosetScreen() {
     [categoryFilter, deletingCategoryId, placeholderColor, handleDeleteCategory, categoryCounts],
   );
 
+  function toggleOutfitSelected(id: string) {
+    setOutfitSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function handleDoneSelecting() {
+    if (outfitSelectedIds.size === 0) {
+      if (boardItems.length === 0) setOutfitMode(false);
+      return;
+    }
+    setBoardItems((prev) => {
+      const existing = new Set(prev.map((i) => i.id));
+      const additions = items.filter(
+        (i) => outfitSelectedIds.has(i.id) && !existing.has(i.id),
+      );
+      return [...prev, ...additions];
+    });
+    setOutfitSelectedIds(new Set());
+  }
+
+  function exitOutfitMode() {
+    setBoardItems([]);
+    setOutfitSelectedIds(new Set());
+    setBoardExpanded(false);
+    setOutfitMode(false);
+  }
+
+  function closeOutfitBoard() {
+    Alert.alert("Discard outfit?", "Items on the board will be cleared.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Discard", style: "destructive", onPress: exitOutfitMode },
+    ]);
+  }
+
+  function removeBoardItem(id: string) {
+    setBoardItems((prev) => prev.filter((i) => i.id !== id));
+  }
+
   async function syncGmail() {
     setFabOpen(false);
     setSyncing(true);
@@ -447,14 +533,17 @@ export default function ClosetScreen() {
       }
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ["images"],
-        allowsEditing: true,
-        aspect: [3, 4],
         quality: 0.85,
       });
       if (!result.canceled && result.assets[0]?.uri) {
+        // Free-form crop (same screen the library flow uses) instead of the
+        // system picker's fixed-aspect editor.
         router.push({
-          pathname: "/add-closet-item",
-          params: { capturedUri: result.assets[0].uri },
+          pathname: "/crop-image",
+          params: {
+            uris: JSON.stringify([result.assets[0].uri]),
+            returnTo: "add-new",
+          },
         });
       }
     } catch (e) {
@@ -505,17 +594,28 @@ export default function ClosetScreen() {
   const listBottomPad = Math.max(32, insets.bottom + 80);
 
   function renderClosetCard(item: ClothingItem, extraStyle?: { marginTop?: number; marginBottom?: number }) {
+    const outfitSelected = outfitMode && outfitSelectedIds.has(item.id);
     return (
       <Pressable
-        onPress={() => router.push(`/edit-closet-item?id=${item.id}`)}
+        onPress={() =>
+          outfitMode
+            ? toggleOutfitSelected(item.id)
+            : router.push(`/edit-closet-item?id=${item.id}`)
+        }
         style={({ pressed }) => [
           styles.cardPressable,
           { width: cardWidth },
           extraStyle,
+          outfitMode && styles.cardOutfitMode,
+          outfitSelected && styles.cardOutfitSelected,
           pressed && styles.cardPressed,
         ]}
         accessibilityRole="button"
-        accessibilityLabel={`Edit ${item.name}`}
+        accessibilityLabel={
+          outfitMode
+            ? `${outfitSelected ? "Deselect" : "Select"} ${item.name} for outfit`
+            : `Edit ${item.name}`
+        }
       >
         <ThemedView style={styles.card}>
           <View style={styles.imageContainer}>
@@ -688,6 +788,65 @@ export default function ClosetScreen() {
     </View>
   );
 
+  const addCategoryFooter = footerAdding ? (
+    <View style={[styles.addCategoryFooter, styles.addCategoryRowContent]}>
+      <TextInput
+        ref={footerInputRef}
+        accessibilityLabel="New category name"
+        placeholder="New category name"
+        placeholderTextColor={placeholderColor}
+        value={footerCategoryName}
+        onChangeText={setFooterCategoryName}
+        onSubmitEditing={handleFooterAddCategory}
+        editable={!savingCategory}
+        style={[
+          styles.addCategoryInput,
+          { borderColor, color: textColor, backgroundColor: inputBackground },
+        ]}
+      />
+      <Pressable
+        onPress={handleFooterAddCategory}
+        disabled={savingCategory || !footerCategoryName.trim()}
+        style={({ pressed }) => [
+          styles.addCategoryBtn,
+          (savingCategory || !footerCategoryName.trim()) && styles.fabDisabled,
+          pressed && { opacity: 0.8 },
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel="Add category"
+      >
+        {savingCategory ? (
+          <ActivityIndicator size="small" color="#fff" />
+        ) : (
+          <Ionicons name="add" size={20} color="#fff" />
+        )}
+      </Pressable>
+      <Pressable
+        onPress={cancelFooterAddCategory}
+        hitSlop={8}
+        style={styles.addCategoryFooterCancel}
+        accessibilityRole="button"
+        accessibilityLabel="Cancel adding category"
+      >
+        <Ionicons name="close" size={22} color={textColor} />
+      </Pressable>
+    </View>
+  ) : (
+    <Pressable
+      onPress={() => setFooterAdding(true)}
+      style={({ pressed }) => [
+        styles.addCategoryFooterBtn,
+        { borderColor },
+        pressed && { opacity: 0.7 },
+      ]}
+      accessibilityRole="button"
+      accessibilityLabel="Add category"
+    >
+      <Ionicons name="add" size={18} color={textColor} />
+      <ThemedText style={styles.addCategoryFooterText}>Add category</ThemedText>
+    </Pressable>
+  );
+
   const listEmpty =
     loadError || sections.length > 0 ? null : items.length > 0 ? (
                 <ThemedText style={styles.emptySearch}>
@@ -733,6 +892,7 @@ export default function ClosetScreen() {
             ]}
             ListHeaderComponent={listHeader}
             ListEmptyComponent={listEmpty}
+            ListFooterComponent={addCategoryFooter}
             renderItem={({ item: section }) => renderSection(section)}
           />
         ) : (
@@ -759,18 +919,43 @@ export default function ClosetScreen() {
               renderSection(section, { drag, isActive })
             }
             ListFooterComponent={
-              uncategorizedSection ? (
-                <>
-                  {draggableSections.length > 0 && (
-                    <View style={styles.sectionDivider} />
-                  )}
-                  {renderSection(uncategorizedSection)}
-                </>
-              ) : null
+              <>
+                {uncategorizedSection && (
+                  <>
+                    {draggableSections.length > 0 && (
+                      <View style={styles.sectionDivider} />
+                    )}
+                    {renderSection(uncategorizedSection)}
+                  </>
+                )}
+                {addCategoryFooter}
+              </>
             }
           />
         )}
-        {fabOpen ? (
+        {outfitMode ? (
+          !boardExpanded &&
+          (outfitSelectedIds.size > 0 || boardItems.length === 0) && (
+            <Pressable
+              onPress={handleDoneSelecting}
+              style={({ pressed }) => [
+                styles.doneSelectingBtn,
+                { bottom: insets.bottom + 10, right: 16 },
+                pressed && styles.fabPressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={
+                outfitSelectedIds.size > 0
+                  ? "Done selecting"
+                  : "Cancel making outfit"
+              }
+            >
+              <ThemedText style={styles.doneSelectingText}>
+                {outfitSelectedIds.size > 0 ? "done selecting" : "cancel"}
+              </ThemedText>
+            </Pressable>
+          )
+        ) : fabOpen ? (
           <>
             <Pressable
               onPress={() => setFabOpen(false)}
@@ -781,6 +966,21 @@ export default function ClosetScreen() {
             <View
               style={[styles.fabMenu, { bottom: insets.bottom + 76, right: 16 }]}
             >
+              <Pressable
+                onPress={() => {
+                  setFabOpen(false);
+                  setOutfitMode(true);
+                }}
+                style={({ pressed }) => [
+                  styles.fabMenuItem,
+                  pressed && styles.fabPressed,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Make an outfit"
+              >
+                <Ionicons name="shirt-outline" size={18} color="#000" />
+                <ThemedText style={styles.fabMenuLabel}>make outfit</ThemedText>
+              </Pressable>
               {hasGmailAccess && (
                 <Pressable
                   onPress={syncGmail}
@@ -882,6 +1082,17 @@ export default function ClosetScreen() {
           >
             <Ionicons name="add" size={30} color="#fff" />
           </Pressable>
+        )}
+        {outfitMode && boardItems.length > 0 && (
+          <OutfitBoard
+            items={boardItems}
+            expanded={boardExpanded}
+            onExpand={() => setBoardExpanded(true)}
+            onMinimize={() => setBoardExpanded(false)}
+            onRemoveItem={removeBoardItem}
+            onClose={closeOutfitBoard}
+            bottomOffset={insets.bottom + 10}
+          />
         )}
       </View>
 
@@ -1234,6 +1445,27 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  addCategoryFooter: {
+    marginTop: 16,
+  },
+  addCategoryFooterBtn: {
+    marginTop: 16,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  addCategoryFooterText: {
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  addCategoryFooterCancel: {
+    padding: 4,
+  },
   sheetCancel: {
     marginTop: 6,
     height: 50,
@@ -1364,6 +1596,34 @@ const styles = StyleSheet.create({
   },
   cardPressed: {
     opacity: 0.75,
+  },
+  cardOutfitMode: {
+    borderWidth: 2,
+    borderColor: "transparent",
+    borderRadius: 14,
+  },
+  cardOutfitSelected: {
+    borderColor: "#000",
+  },
+  doneSelectingBtn: {
+    position: "absolute",
+    height: 48,
+    paddingHorizontal: 22,
+    borderRadius: 24,
+    backgroundColor: "#000",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 1,
+    shadowColor: "#000",
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+  },
+  doneSelectingText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "600",
   },
   card: {
     flex: 1,

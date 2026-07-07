@@ -1,4 +1,4 @@
-import { getSupabase } from "@/supabase-client";
+import { getSupabase } from "@/lib/supabase-client";
 
 export type CPWSnapshot = {
   dateKey: string; // "YYYY-MM-DD"

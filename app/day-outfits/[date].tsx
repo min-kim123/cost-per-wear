@@ -40,7 +40,7 @@ import {
   saveOutfitItemsOnly,
 } from "@/lib/outfit-storage";
 import { getWeatherMap } from "@/lib/weather";
-import { getSupabase } from "@/supabase-client";
+import { getSupabase } from "@/lib/supabase-client";
 
 type ClosetItem = {
   id: string;

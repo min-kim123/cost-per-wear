@@ -16,7 +16,7 @@ import { TAB_META } from "@/constants/tabs";
 import { useThemeColor } from "@/hooks/use-theme-color";
 import { useDevTabVisibility } from "@/lib/dev-tab-visibility";
 import { useDevToggle } from "@/lib/dev-toggles";
-import { getSupabase } from "@/supabase-client";
+import { getSupabase } from "@/lib/supabase-client";
 
 // Every tab except Settings itself can be hidden — Settings always stays
 // reachable so toggling tabs off can never lock you out of this screen.

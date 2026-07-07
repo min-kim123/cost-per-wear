@@ -1,7 +1,7 @@
 import * as FileSystem from "expo-file-system/legacy";
 
 import { saveToCameraRoll } from "@/lib/save-to-camera-roll";
-import { getSupabase } from "@/supabase-client";
+import { getSupabase } from "@/lib/supabase-client";
 import { deleteOutfitPhoto, uploadOutfitPhoto } from "./outfit-upload";
 
 // ─── Types ────────────────────────────────────────────────────────────────────

@@ -13,5 +13,11 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
+  ],
+  // Edge functions run on Deno (Deno globals, https: imports) and are not
+  // checkable with the app's Node/React Native tooling.
+  "exclude": [
+    "node_modules",
+    "supabase/functions"
   ]
 }

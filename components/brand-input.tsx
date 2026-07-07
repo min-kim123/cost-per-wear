@@ -16,6 +16,8 @@ type Props = {
   onChange: (value: string) => void;
   editable?: boolean;
   placeholder?: string;
+  compact?: boolean;
+  backgroundColor?: string;
 };
 
 export function BrandInput({
@@ -23,6 +25,8 @@ export function BrandInput({
   onChange,
   editable = true,
   placeholder = "e.g. Uniqlo",
+  compact = false,
+  backgroundColor,
 }: Props) {
   const [allBrands, setAllBrands] = useState<string[]>([]);
   const [brandCounts, setBrandCounts] = useState<Record<string, number>>({});
@@ -33,7 +37,8 @@ export function BrandInput({
   const textColor = useThemeColor({}, "text");
   const placeholderColor = useThemeColor({ light: "#8E8E93" }, "icon");
   const borderColor = useThemeColor({ light: "#C6C6C8" }, "icon");
-  const inputBackground = useThemeColor({ light: "#EFEFF4" }, "background");
+  const defaultInputBackground = useThemeColor({ light: "#EFEFF4" }, "background");
+  const inputBackground = backgroundColor ?? defaultInputBackground;
   const dropdownBackground = useThemeColor({ light: "#fff" }, "background");
   const separatorColor = useThemeColor({ light: "#E5E5EA" }, "icon");
 
@@ -95,6 +100,7 @@ export function BrandInput({
         ref={inputRef}
         style={[
           styles.input,
+          compact && styles.inputCompact,
           { color: textColor, borderColor, backgroundColor: inputBackground },
         ]}
         placeholder={placeholder}
@@ -112,6 +118,7 @@ export function BrandInput({
         <View
           style={[
             styles.dropdown,
+            compact && styles.dropdownCompact,
             { borderColor, backgroundColor: dropdownBackground },
           ]}
         >
@@ -166,6 +173,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     fontSize: 16,
   },
+  inputCompact: {
+    height: 30,
+    paddingVertical: 0,
+    fontSize: 14,
+  },
   dropdown: {
     position: "absolute",
     top: 46,
@@ -181,6 +193,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.12,
     shadowRadius: 6,
     elevation: 8,
+  },
+  dropdownCompact: {
+    top: 32,
   },
   suggestion: {
     paddingHorizontal: 14,
