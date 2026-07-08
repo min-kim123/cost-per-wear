@@ -23,6 +23,8 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { MultiCategoryPicker } from "@/components/category-picker";
+import { DayTileOutfits } from "@/components/day-tile-outfits";
+import { StaticOutfitBoard } from "@/components/outfit-board-static";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
@@ -35,10 +37,13 @@ import {
 } from "@/lib/categories";
 import {
   type DayOutfit,
+  adjustWears,
   deleteOutfit,
   getOutfitsForDate,
+  getWornItemIdsForDate,
   saveOutfitItemsOnly,
 } from "@/lib/outfit-storage";
+import { useTabNavigation } from "@/lib/tab-navigation";
 import { getWeatherMap } from "@/lib/weather";
 import { getSupabase } from "@/lib/supabase-client";
 
@@ -122,22 +127,10 @@ function formatDateTitle(dateKey: string): { weekday: string; rest: string } | n
   };
 }
 
-async function adjustWears(ids: string[], delta: 1 | -1) {
-  if (ids.length === 0) return;
-  const supabase = getSupabase();
-  const { data: rows } = await supabase
-    .from("closet")
-    .select("id, wears")
-    .in("id", ids);
-  for (const row of rows ?? []) {
-    const newWears = Math.max(0, ((row.wears as number) ?? 0) + delta);
-    await supabase.from("closet").update({ wears: newWears }).eq("id", row.id);
-  }
-}
-
 export default function DayOutfitsScreen() {
   const { date } = useLocalSearchParams<{ date: string }>();
   const router = useRouter();
+  const { goToTab } = useTabNavigation();
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const dateKey = typeof date === "string" ? date : "";
@@ -308,6 +301,14 @@ export default function DayOutfitsScreen() {
     });
   }
 
+  function goMakeOutfitBoard() {
+    goToTab("closet");
+    router.navigate({
+      pathname: "/(tabs)/closet",
+      params: { outfitForDate: dateKey },
+    });
+  }
+
   async function saveSelectedOutfit() {
     if (selectedCount === 0 || saving) return;
     setSaving(true);
@@ -315,7 +316,13 @@ export default function DayOutfitsScreen() {
       const newIds = Array.from(selectedIds).filter(
         (id) => !dailyStackIdSet.has(id),
       );
-      await adjustWears(newIds, 1);
+      // Wears cap at one per item per day — skip items already in another
+      // outfit on this date.
+      const alreadyWorn = await getWornItemIdsForDate(dateKey);
+      await adjustWears(
+        newIds.filter((id) => !alreadyWorn.has(id)),
+        1,
+      );
       // Daily Stack items are always part of the outfit, appended at the end.
       await saveOutfitItemsOnly([...newIds, ...dailyStackItemIds], dateKey);
       setSelectedIds(new Set());
@@ -376,7 +383,15 @@ export default function DayOutfitsScreen() {
     return (
       <Pressable
         key={item.id}
-        onPress={() =>
+        onPress={() => {
+          if (item.board) {
+            goToTab("closet");
+            router.navigate({
+              pathname: "/(tabs)/closet",
+              params: { outfitForDate: dateKey, editDayOutfitId: item.id },
+            });
+            return;
+          }
           router.push({
             pathname: "/log-outfit",
             params: {
@@ -385,8 +400,8 @@ export default function DayOutfitsScreen() {
               itemIds: item.itemIds.join(","),
               photoUri: item.photoUri ?? "",
             },
-          })
-        }
+          });
+        }}
         style={({ pressed }) => [styles.card, pressed && { opacity: 0.85 }]}
         accessibilityRole="button"
         accessibilityLabel={`Edit outfit ${index + 1}`}
@@ -425,33 +440,31 @@ export default function DayOutfitsScreen() {
             style={styles.photo}
             contentFit="cover"
           />
+        ) : item.board ? (
+          <View
+            style={[
+              styles.boardThumb,
+              { aspectRatio: item.board.canvasW / item.board.canvasH },
+            ]}
+          >
+            <StaticOutfitBoard
+              canvasW={item.board.canvasW}
+              canvasH={item.board.canvasH}
+              items={item.board.items.map((bi) => ({
+                ...bi,
+                image: itemData[bi.id]?.image ?? null,
+              }))}
+            />
+          </View>
         ) : itemsWithData.length > 0 ? (
-          <View style={styles.itemGrid}>
-            {itemsWithData.map(({ id, name, image }) => (
-              <View key={id} style={styles.itemGridThumb}>
-                {image ? (
-                  <Image
-                    source={{ uri: image }}
-                    style={styles.itemGridImage}
-                    contentFit="cover"
-                  />
-                ) : (
-                  <View style={styles.itemThumbPlaceholder}>
-                    <Ionicons
-                      name="shirt-outline"
-                      size={24}
-                      color="rgba(128,128,128,0.6)"
-                    />
-                  </View>
-                )}
-                <ThemedText
-                  numberOfLines={2}
-                  style={styles.itemThumbLabel}
-                >
-                  {name}
-                </ThemedText>
-              </View>
-            ))}
+          <View style={styles.itemGridThumb}>
+            <DayTileOutfits
+              imageUris={
+                itemsWithData
+                  .map(({ image }) => image)
+                  .filter((uri): uri is string => !!uri)
+              }
+            />
           </View>
         ) : null}
 
@@ -631,7 +644,18 @@ export default function DayOutfitsScreen() {
         <ThemedText type="defaultSemiBold" style={styles.pickerTitle}>
           Make an outfit
         </ThemedText>
-
+        <Pressable
+          onPress={goMakeOutfitBoard}
+          style={({ pressed }) => [
+            styles.makeBoardBtn,
+            pressed && { opacity: 0.7 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Make outfit board for this day"
+        >
+          <Ionicons name="grid-outline" size={14} color="#fff" />
+          <Text style={styles.makeBoardBtnText}>outfit board</Text>
+        </Pressable>
       </View>
 
       <MultiCategoryPicker
@@ -1000,26 +1024,22 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: "rgba(128,128,128,0.2)",
   },
-  itemsLabel: {
-    fontWeight: "600",
-    marginTop: 4,
-  },
-  itemGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    paddingVertical: 4,
-  },
   itemGridThumb: {
-    width: "22%",
-    alignItems: "center",
-    gap: 4,
-  },
-  itemGridImage: {
     width: "100%",
     aspectRatio: 3 / 4,
     borderRadius: 8,
-    backgroundColor: "rgba(128,128,128,0.15)",
+    overflow: "hidden",
+    backgroundColor: "rgba(128,128,128,0.2)",
+  },
+  boardThumb: {
+    width: "100%",
+    borderRadius: 8,
+    overflow: "hidden",
+    backgroundColor: "#fff",
+  },
+  itemsLabel: {
+    fontWeight: "600",
+    marginTop: 4,
   },
   itemStrip: {
     gap: 10,
@@ -1055,10 +1075,27 @@ const styles = StyleSheet.create({
   pickerHeader: {
     marginTop: 24,
     marginBottom: 10,
-    gap: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
   },
   pickerTitle: {
     fontSize: 17,
+  },
+  makeBoardBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#000",
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    height: 30,
+  },
+  makeBoardBtnText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "600",
   },
   pickerHint: {
     fontSize: 13,

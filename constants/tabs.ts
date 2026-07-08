@@ -19,6 +19,11 @@ export const TAB_META = [
     icon: { default: "shirt-outline", active: "shirt" },
   },
   {
+    key: "outfitBoards",
+    title: "Outfit Boards",
+    icon: { default: "albums-outline", active: "albums" },
+  },
+  {
     key: "shopping",
     title: "Shopping",
     icon: { default: "bag-outline", active: "bag" },
@@ -27,11 +32,6 @@ export const TAB_META = [
     key: "data",
     title: "Data",
     icon: { default: "bar-chart-outline", active: "bar-chart" },
-  },
-  {
-    key: "settings",
-    title: "Settings",
-    icon: { default: "settings-outline", active: "settings" },
   },
 ] as const;
 

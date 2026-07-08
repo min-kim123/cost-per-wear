@@ -13,6 +13,9 @@ export type PendingClosetSave = {
   wears: number;
   localUri: string | null;
   category: string | null;
+  // True when this platform couldn't remove the background itself (web,
+  // Android) — an iOS device picks the item up and runs the cutout there.
+  needsBgRemoval?: boolean;
 };
 
 export type ClosetSaveState = {
@@ -61,12 +64,14 @@ async function processQueue() {
     data: { session },
   } = await supabase.auth.getSession();
   const user = session?.user;
+  let savedNeedingBgRemoval = false;
   while (queue.length > 0) {
     const item = queue.shift()!;
     try {
       const image = item.localUri
         ? await uploadClosetItemImage(item.localUri, user?.id)
         : null;
+      const needsBgRemoval = !!image && !!item.needsBgRemoval;
       const { error } = await supabase.from("closet").insert({
         name: item.name,
         brand: item.brand,
@@ -74,6 +79,7 @@ async function processQueue() {
         wears: item.wears,
         image,
         category: item.category,
+        needs_bg_removal: needsBgRemoval,
         daily_stack_since:
           item.category === DAILY_STACK_CATEGORY_NAME
             ? new Date().toISOString()
@@ -81,11 +87,17 @@ async function processQueue() {
         user_id: user?.id,
       });
       if (error) throw new Error(error.message);
+      if (needsBgRemoval) savedNeedingBgRemoval = true;
       state = { ...state, done: state.done + 1 };
     } catch {
       state = { ...state, done: state.done + 1, errors: state.errors + 1 };
     }
     emit();
+  }
+  // Wake the user's iPhone with a silent push so it can run the cutouts now
+  // instead of waiting for the app to next open.
+  if (savedNeedingBgRemoval) {
+    supabase.functions.invoke("notify-bg-removal").catch(() => {});
   }
   running = false;
   state = { ...state, active: false };

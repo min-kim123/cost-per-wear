@@ -17,7 +17,13 @@ import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { DAILY_STACK_CATEGORY_NAME } from "@/lib/categories";
 import { requestHomeCameraReset } from "@/lib/home-camera-reset";
-import { draftPhotoExists, saveOutfitForToday } from "@/lib/outfit-storage";
+import {
+  adjustWears,
+  draftPhotoExists,
+  getTodayDateKey,
+  getWornItemIdsForDate,
+  saveOutfitForToday,
+} from "@/lib/outfit-storage";
 import { getSupabase } from "@/lib/supabase-client";
 
 type ClothingItem = {
@@ -35,6 +41,7 @@ async function loadClosetItems(): Promise<ClothingItem[]> {
   const { data, error } = await supabase
     .from("closet")
     .select("id, brand, name, cost, wears, image, category")
+    .order("position", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: false });
   if (error) throw new Error(error.message);
   return (data ?? []).map((row) => {
@@ -121,6 +128,13 @@ export default function SelectOutfitItemsScreen() {
     setSaving(true);
     try {
       const selectedIds = Array.from(selected).filter((id) => !dailyStackIdSet.has(id));
+      // Wears cap at one per item per day — skip items already in another
+      // outfit today.
+      const alreadyWorn = await getWornItemIdsForDate(getTodayDateKey());
+      await adjustWears(
+        selectedIds.filter((id) => !alreadyWorn.has(id)),
+        1,
+      );
       await saveOutfitForToday([...selectedIds, ...dailyStackItemIds]);
       requestHomeCameraReset();
       router.back();

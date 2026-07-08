@@ -3,7 +3,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -24,9 +24,11 @@ import { PasteImageButton } from "@/components/paste-image-button";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
-import { DAILY_STACK_CATEGORY_NAME, listCategories } from "@/lib/categories";
+import { requestPhoneBgRemoval } from "@/lib/bg-removal-request";
+import { addCategory, DAILY_STACK_CATEGORY_NAME, listCategories } from "@/lib/categories";
 import { writeClipboardImageToLocalUri } from "@/lib/clipboard-image";
 import { onImageCaptured } from "@/lib/image-capture-bridge";
+import { saveToCameraRoll } from "@/lib/save-to-camera-roll";
 import { liftSubject, subjectLiftAvailable } from "@/lib/subject-lift";
 import { getSupabase } from "@/lib/supabase-client";
 
@@ -62,7 +64,12 @@ export default function EditClosetItemScreen() {
   const [showMenu, setShowMenu] = useState(false);
   const [picking, setPicking] = useState(false);
   const [removingBackground, setRemovingBackground] = useState(false);
+  // Waiting on the user's iPhone to answer a paste-time cutout request (web).
+  // Unlike removingBackground this doesn't block saving — an unanswered image
+  // just gets flagged for the phone queue at save.
+  const [waitingForPhone, setWaitingForPhone] = useState(false);
   const [imageAspect, setImageAspect] = useState(3 / 4);
+  const [showImageOptions, setShowImageOptions] = useState(false);
 
   const { width: windowWidth } = useWindowDimensions();
   const textColor = useThemeColor({}, "text");
@@ -137,6 +144,7 @@ export default function EditClosetItemScreen() {
         }
         const result = await ImagePicker.launchCameraAsync(PICKER_OPTIONS);
         if (!result.canceled && result.assets[0]?.uri) {
+          saveToCameraRoll(result.assets[0].uri);
           setPickedUri(result.assets[0].uri);
           setImageCleared(false);
         }
@@ -172,18 +180,53 @@ export default function EditClosetItemScreen() {
     setImageCleared(true);
   };
 
+  // Tracks the URI that already had its background removed, so onSave doesn't
+  // also flag it for the phone-side queue.
+  const bgRemovedUriRef = useRef<string | null>(null);
+  // Original uploaded for a paste-time phone request — reused at save so the
+  // image isn't uploaded twice.
+  const uploadedRef = useRef<{ forUri: string; url: string } | null>(null);
+
   const pasteImage = async (data: string) => {
     const uri = await writeClipboardImageToLocalUri(data);
     setPickedUri(uri);
     setImageCleared(false);
+
+    if (subjectLiftAvailable()) {
+      setRemovingBackground(true);
+      liftSubject(uri)
+        .then((cutoutUri) => {
+          bgRemovedUriRef.current = cutoutUri;
+          setPickedUri((prev) => (prev === uri ? cutoutUri : prev));
+        })
+        .catch(() => {
+          // Keep the pasted photo as-is if background removal fails.
+        })
+        .finally(() => setRemovingBackground(false));
+      return;
+    }
+    if (Platform.OS !== "web") return;
+
+    // Web: upload now and ask the user's iPhone to cut out the subject; swap
+    // in the result when it lands. No answer → flagged at save instead.
+    setWaitingForPhone(true);
+    try {
+      const { sourceUrl, result } = await requestPhoneBgRemoval(uri);
+      uploadedRef.current = { forUri: uri, url: sourceUrl };
+      const cutoutUrl = await result;
+      if (cutoutUrl) {
+        bgRemovedUriRef.current = cutoutUrl;
+        setPickedUri((prev) => (prev === uri ? cutoutUrl : prev));
+      }
+    } catch {
+      // Keep the pasted photo as-is; the phone-side queue catches it later.
+    } finally {
+      setWaitingForPhone(false);
+    }
   };
 
   const onSave = async () => {
     const trimmed = name.trim();
-    if (!trimmed) {
-      Alert.alert("Name required", "Enter a name for this item.");
-      return;
-    }
     const parsed = parseFloat(costText.replace(/,/g, ""));
     const cost = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
     const parsedWears = parseInt(wearsText, 10);
@@ -199,7 +242,11 @@ export default function EditClosetItemScreen() {
 
       let image: string | null;
       if (pickedUri) {
-        image = await uploadClosetItemImage(pickedUri, user?.id);
+        // Reuse the copy uploaded at paste time if the image hasn't changed.
+        image =
+          uploadedRef.current?.forUri === pickedUri
+            ? uploadedRef.current.url
+            : await uploadClosetItemImage(pickedUri, user?.id);
       } else if (imageCleared) {
         image = null;
       } else {
@@ -211,6 +258,14 @@ export default function EditClosetItemScreen() {
       const leavingDailyStack =
         category !== DAILY_STACK_CATEGORY_NAME && originalCategory === DAILY_STACK_CATEGORY_NAME;
 
+      // New photo attached with no cutout on it yet (the phone hasn't
+      // answered, or this is Android) — flag it so an iOS device removes the
+      // background via the silent-push queue.
+      const needsBgRemoval =
+        !!pickedUri &&
+        pickedUri !== bgRemovedUriRef.current &&
+        !subjectLiftAvailable();
+
       const { error } = await supabase
         .from("closet")
         .update({
@@ -220,12 +275,16 @@ export default function EditClosetItemScreen() {
           wears,
           image,
           category: category ?? null,
+          ...(needsBgRemoval ? { needs_bg_removal: true } : {}),
           ...(enteringDailyStack ? { daily_stack_since: new Date().toISOString() } : {}),
           ...(leavingDailyStack ? { daily_stack_since: null } : {}),
         })
         .eq("id", id);
 
       if (error) throw new Error(error.message);
+      if (needsBgRemoval) {
+        supabase.functions.invoke("notify-bg-removal").catch(() => {});
+      }
       router.back();
     } catch (e) {
       Alert.alert(
@@ -235,6 +294,12 @@ export default function EditClosetItemScreen() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleAddCategory = async (name: string) => {
+    const created = await addCategory(name);
+    setCategories((prev) => [...prev, created.name]);
+    return created.name;
   };
 
   const closeMenu = () => {
@@ -272,8 +337,8 @@ export default function EditClosetItemScreen() {
     setImageAspect(3 / 4);
   }, [displayUri]);
 
-  // Screen width minus page padding, the row gap, and the side button column
-  const maxPreviewWidth = windowWidth - 16 * 2 - 8 - 72;
+  // Screen width minus page padding
+  const maxPreviewWidth = windowWidth - 16 * 2;
 
   const inputCompact = [
     styles.inputCompact,
@@ -381,6 +446,15 @@ export default function EditClosetItemScreen() {
 
       <ThemedView style={styles.page}>
         <Pressable
+          onPress={() => router.back()}
+          style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.5 }]}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+        >
+          <Ionicons name="chevron-back" size={26} color="#666" />
+        </Pressable>
+
+        <Pressable
           onPress={() => setShowMenu(true)}
           disabled={busy}
           style={({ pressed }) => [styles.menuBtn, pressed && { opacity: 0.5 }]}
@@ -394,110 +468,145 @@ export default function EditClosetItemScreen() {
         <View style={styles.mainCol}>
           {/* Image column */}
           <View style={styles.imageCol}>
-            <View style={styles.imageRow}>
-              <View style={styles.previewWrap}>
-                {displayUri ? (
-                  <Image
-                    source={{ uri: displayUri }}
-                    style={[
-                      styles.preview,
-                      {
-                        height: PREVIEW_HEIGHT,
-                        width: Math.min(PREVIEW_HEIGHT * imageAspect, maxPreviewWidth),
-                      },
-                    ]}
-                    contentFit="contain"
-                    onLoad={(e) => {
-                      const { width, height } = e.source;
-                      if (width && height) setImageAspect(width / height);
-                    }}
-                  />
-                ) : (
-                  <View
-                    style={[
-                      styles.preview,
-                      styles.previewPlaceholder,
-                      { height: PREVIEW_HEIGHT, width: PREVIEW_HEIGHT * (3 / 4), borderColor },
-                    ]}
-                  >
-                    <Ionicons name="image-outline" size={32} color={placeholderColor} />
-                  </View>
-                )}
-                {removingBackground ? (
-                  <View style={styles.previewOverlay}>
-                    <ActivityIndicator color="#fff" />
-                    <ThemedText style={styles.previewOverlayText} lightColor="#fff" darkColor="#fff">
-                      Removing background…
-                    </ThemedText>
-                  </View>
-                ) : null}
-              </View>
-              <View style={styles.imageSideButtons}>
-                {displayUri ? (
-                  <Pressable
-                    onPress={() =>
-                      router.push({
-                        pathname: "/crop-image",
-                        params: { uri: displayUri, returnTo: "edit", id },
-                      })
-                    }
-                    disabled={busy}
-                    style={[styles.imageBtn, { borderColor, backgroundColor: inputBackground }]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Edit photo"
-                  >
-                    <Ionicons name="pencil" size={16} color={textColor} />
-                  </Pressable>
-                ) : null}
-                <Pressable
-                  onPress={() => runPicker("camera")}
-                  disabled={busy}
-                  style={[styles.imageBtn, { borderColor, backgroundColor: inputBackground }]}
+            <View style={styles.previewWrap}>
+              {displayUri ? (
+                <Image
+                  source={{ uri: displayUri }}
+                  style={[
+                    styles.preview,
+                    {
+                      height: PREVIEW_HEIGHT,
+                      width: Math.min(PREVIEW_HEIGHT * imageAspect, maxPreviewWidth),
+                    },
+                  ]}
+                  contentFit="contain"
+                  onLoad={(e) => {
+                    const { width, height } = e.source;
+                    if (width && height) setImageAspect(width / height);
+                  }}
+                />
+              ) : (
+                <View
+                  style={[
+                    styles.preview,
+                    styles.previewPlaceholder,
+                    { height: PREVIEW_HEIGHT, width: PREVIEW_HEIGHT * (3 / 4), borderColor },
+                  ]}
                 >
-                  <Ionicons name="camera-outline" size={16} color={textColor} />
-                </Pressable>
+                  <Ionicons name="image-outline" size={32} color={placeholderColor} />
+                </View>
+              )}
+              {removingBackground || waitingForPhone ? (
+                <View style={styles.previewOverlay}>
+                  <ActivityIndicator color="#fff" />
+                  <ThemedText style={styles.previewOverlayText} lightColor="#fff" darkColor="#fff">
+                    Removing background…
+                  </ThemedText>
+                </View>
+              ) : null}
+              <View style={styles.imageOptionsAnchor}>
                 <Pressable
-                  onPress={() => runPicker("library")}
-                  disabled={busy}
-                  style={[styles.imageBtn, { borderColor, backgroundColor: inputBackground }]}
-                >
-                  <Ionicons name="images-outline" size={16} color={textColor} />
-                </Pressable>
-                <Pressable
-                  onPress={() =>
-                    router.push({
-                      pathname: "/web-capture",
-                      params: { returnTo: "edit", id },
-                    })
-                  }
+                  onPress={() => setShowImageOptions((v) => !v)}
                   disabled={busy}
                   style={[styles.imageBtn, { borderColor, backgroundColor: inputBackground }]}
                   accessibilityRole="button"
-                  accessibilityLabel="Capture image from the web"
+                  accessibilityLabel={showImageOptions ? "Hide photo options" : "Edit photo"}
                 >
-                  <Ionicons name="globe-outline" size={16} color={textColor} />
+                  <Ionicons
+                    name={showImageOptions ? "chevron-up" : "pencil"}
+                    size={16}
+                    color={textColor}
+                  />
                 </Pressable>
-                <PasteImageButton
-                  size={{ width: 32, height: 32 }}
-                  style={{ borderWidth: 1, borderColor }}
-                  backgroundColor={inputBackground}
-                  foregroundColor={textColor}
-                  cornerStyle="small"
-                  displayMode="iconOnly"
-                  disabled={busy}
-                  accessibilityLabel="Paste image from clipboard"
-                  onImage={pasteImage}
-                >
-                  <Ionicons name="clipboard-outline" size={16} color={textColor} />
-                </PasteImageButton>
-                {displayUri ? (
-                  <Pressable
-                    onPress={clearImage}
-                    disabled={busy}
-                    style={[styles.imageBtn, { borderColor, backgroundColor: inputBackground }]}
-                  >
-                    <Ionicons name="close-outline" size={16} color="#C00" />
-                  </Pressable>
+                {showImageOptions ? (
+                  <View style={styles.imageOptionsMenu}>
+                    {displayUri ? (
+                      <Pressable
+                        onPress={() => {
+                          setShowImageOptions(false);
+                          router.push({
+                            pathname: "/crop-image",
+                            params: { uri: displayUri, returnTo: "edit", id },
+                          });
+                        }}
+                        disabled={busy}
+                        style={[styles.imageBtn, { borderColor, backgroundColor: inputBackground }]}
+                        accessibilityRole="button"
+                        accessibilityLabel="Crop photo"
+                      >
+                        <Ionicons name="crop-outline" size={16} color={textColor} />
+                      </Pressable>
+                    ) : null}
+                    <Pressable
+                      onPress={() => {
+                        setShowImageOptions(false);
+                        runPicker("camera");
+                      }}
+                      disabled={busy}
+                      style={[styles.imageBtn, { borderColor, backgroundColor: inputBackground }]}
+                      accessibilityRole="button"
+                      accessibilityLabel="Take photo"
+                    >
+                      <Ionicons name="camera-outline" size={16} color={textColor} />
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setShowImageOptions(false);
+                        runPicker("library");
+                      }}
+                      disabled={busy}
+                      style={[styles.imageBtn, { borderColor, backgroundColor: inputBackground }]}
+                      accessibilityRole="button"
+                      accessibilityLabel="Choose from library"
+                    >
+                      <Ionicons name="images-outline" size={16} color={textColor} />
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setShowImageOptions(false);
+                        router.push({
+                          pathname: "/web-capture",
+                          params: { returnTo: "edit", id },
+                        });
+                      }}
+                      disabled={busy}
+                      style={[styles.imageBtn, { borderColor, backgroundColor: inputBackground }]}
+                      accessibilityRole="button"
+                      accessibilityLabel="Capture image from the web"
+                    >
+                      <Ionicons name="globe-outline" size={16} color={textColor} />
+                    </Pressable>
+                    <PasteImageButton
+                      size={{ width: 32, height: 32 }}
+                      style={{ borderWidth: 1, borderColor }}
+                      backgroundColor={inputBackground}
+                      foregroundColor={textColor}
+                      cornerStyle="small"
+                      displayMode="iconOnly"
+                      disabled={busy}
+                      accessibilityLabel="Paste image from clipboard"
+                      onImage={(data) => {
+                        setShowImageOptions(false);
+                        pasteImage(data);
+                      }}
+                    >
+                      <Ionicons name="clipboard-outline" size={16} color={textColor} />
+                    </PasteImageButton>
+                    {displayUri ? (
+                      <Pressable
+                        onPress={() => {
+                          setShowImageOptions(false);
+                          clearImage();
+                        }}
+                        disabled={busy}
+                        style={[styles.imageBtn, { borderColor, backgroundColor: inputBackground }]}
+                        accessibilityRole="button"
+                        accessibilityLabel="Remove photo"
+                      >
+                        <Ionicons name="close-outline" size={16} color="#C00" />
+                      </Pressable>
+                    ) : null}
+                  </View>
                 ) : null}
               </View>
             </View>
@@ -505,7 +614,7 @@ export default function EditClosetItemScreen() {
 
           {/* Fields column */}
           <View style={styles.fieldsCol}>
-            <View style={styles.fieldRow}>
+            <View style={[styles.fieldRow, styles.brandFieldRow]}>
               <ThemedText style={styles.fieldLabel}>Brand</ThemedText>
               <View style={styles.fieldInputWrap}>
                 <BrandInput
@@ -558,6 +667,42 @@ export default function EditClosetItemScreen() {
                 returnKeyType="done"
                 onSubmitEditing={Keyboard.dismiss}
               />
+              <Pressable
+                onPress={() =>
+                  setWearsText((prev) => {
+                    const parsed = parseInt(prev, 10);
+                    return String(Math.max((Number.isFinite(parsed) ? parsed : 0) - 1, 0));
+                  })
+                }
+                disabled={busy}
+                style={({ pressed }) => [
+                  styles.wearsIncrementBtn,
+                  { borderColor, backgroundColor: inputBackground },
+                  pressed && { opacity: 0.6 },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Remove one wear"
+              >
+                <Ionicons name="remove" size={18} color={textColor} />
+              </Pressable>
+              <Pressable
+                onPress={() =>
+                  setWearsText((prev) => {
+                    const parsed = parseInt(prev, 10);
+                    return String((Number.isFinite(parsed) ? parsed : 0) + 1);
+                  })
+                }
+                disabled={busy}
+                style={({ pressed }) => [
+                  styles.wearsIncrementBtn,
+                  { borderColor, backgroundColor: inputBackground },
+                  pressed && { opacity: 0.6 },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Add one wear"
+              >
+                <Ionicons name="add" size={18} color={textColor} />
+              </Pressable>
             </View>
           </View>
         </View>
@@ -570,6 +715,7 @@ export default function EditClosetItemScreen() {
           categories={categories}
           nullable
           disabled={busy}
+          onAddCategory={handleAddCategory}
         />
 
         {/* ── Meta ──────────────────────────────────────────────── */}
@@ -617,6 +763,13 @@ const styles = StyleSheet.create({
 
   // ── Page ──────────────────────────────────────────────────────────
   page: { flex: 1, padding: 16, paddingTop: 44, paddingBottom: 28, gap: 10 },
+  backBtn: {
+    position: "absolute",
+    top: 14,
+    left: 14,
+    zIndex: 5,
+    padding: 4,
+  },
   menuBtn: {
     position: "absolute",
     top: 14,
@@ -628,8 +781,8 @@ const styles = StyleSheet.create({
   // ── Main column: image on top, fields below ────────────────────────
   mainCol: { gap: 14, alignItems: "center" },
 
-  imageCol: { gap: 6, alignItems: "center" },
-  previewWrap: { flexShrink: 0 },
+  imageCol: { width: "100%", gap: 6, alignItems: "center" },
+  previewWrap: { flexShrink: 0, position: "relative", alignSelf: "center" },
   preview: {
     borderRadius: 10,
     backgroundColor: "rgba(128,128,128,0.15)",
@@ -653,12 +806,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  imageRow: { flexDirection: "row", gap: 8, alignItems: "center" },
-  imageSideButtons: {
-    flexDirection: "row",
-    flexWrap: "wrap",
+  imageOptionsAnchor: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    zIndex: 3,
+    alignItems: "flex-end",
     gap: 8,
-    width: 72,
+  },
+  imageOptionsMenu: {
+    alignItems: "flex-end",
+    gap: 8,
   },
   imageBtn: {
     width: 32,
@@ -671,8 +829,17 @@ const styles = StyleSheet.create({
 
   fieldsCol: { width: "100%", gap: 8 },
   fieldRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  brandFieldRow: { zIndex: 10 },
   fieldLabel: { width: 48, fontSize: 13, opacity: 0.65 },
   fieldInputWrap: { flex: 1 },
+  wearsIncrementBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   inputCompact: {
     height: 30,
     borderWidth: 1,

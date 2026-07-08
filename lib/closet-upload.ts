@@ -1,7 +1,6 @@
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImageManipulator from "expo-image-manipulator";
 import { Image as RNImage, Platform } from "react-native";
-import { saveToCameraRoll } from "@/lib/save-to-camera-roll";
 import { getSupabase } from "@/lib/supabase-client";
 
 export const CLOSET_IMAGE_BUCKET = "closet-images";
@@ -68,11 +67,11 @@ export async function uploadClosetItemImage(
   localUri: string,
   userId?: string | null,
 ): Promise<string> {
-  const supabase = getSupabase();
+  // Already a hosted URL (e.g. uploaded at paste time for phone-side
+  // background removal) — nothing to upload.
+  if (/^https?:\/\//i.test(localUri)) return localUri;
 
-  // Camera roll gets the full-resolution original; the upload gets a
-  // downscaled copy.
-  saveToCameraRoll(localUri);
+  const supabase = getSupabase();
   const uploadUri = await downscaleForUpload(localUri);
 
   // On native, Hermes doesn't support creating Blobs from ArrayBuffer/ArrayBufferView

@@ -2,14 +2,32 @@ import * as FileSystem from "expo-file-system/legacy";
 
 import { saveToCameraRoll } from "@/lib/save-to-camera-roll";
 import { getSupabase } from "@/lib/supabase-client";
+import { DAILY_STACK_CATEGORY_NAME } from "./categories";
 import { deleteOutfitPhoto, uploadOutfitPhoto } from "./outfit-upload";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+export type DayOutfitBoardItem = {
+  id: string; // closet item id
+  x: number;
+  y: number;
+  scale: number;
+  z: number;
+};
+
+export type DayOutfitBoard = {
+  canvasW: number;
+  canvasH: number;
+  items: DayOutfitBoardItem[];
+};
 
 export type DayOutfit = {
   id: string;
   photoUri: string;   // Supabase Storage public URL, or "" if no photo
   itemIds: string[];
+  /** Saved outfit-board arrangement, when this outfit was built with the
+   *  board instead of a plain item picker. Null otherwise. */
+  board: DayOutfitBoard | null;
 };
 
 export type MonthCell = {
@@ -56,10 +74,17 @@ export async function draftPhotoExists(): Promise<boolean> {
 // ─── Row mapper ───────────────────────────────────────────────────────────────
 
 function rowToOutfit(row: Record<string, unknown>): DayOutfit {
+  const canvasW = row.board_canvas_w as number | null;
+  const canvasH = row.board_canvas_h as number | null;
+  const boardItems = row.board_items as DayOutfitBoardItem[] | null;
   return {
     id: row.id as string,
     photoUri: (row.photo_url as string | null) ?? "",
     itemIds: (row.item_ids as string[]) ?? [],
+    board:
+      canvasW && canvasH && boardItems && boardItems.length > 0
+        ? { canvasW, canvasH, items: boardItems }
+        : null,
   };
 }
 
@@ -71,7 +96,7 @@ export async function getOutfitsMap(): Promise<Record<string, DayOutfit[]>> {
   const { data: { user } } = await supabase.auth.getUser();
   const { data } = await supabase
     .from("outfits")
-    .select("id, date_key, photo_url, item_ids")
+    .select("id, date_key, photo_url, item_ids, board_canvas_w, board_canvas_h, board_items")
     .eq("user_id", user?.id ?? "")
     .order("created_at", { ascending: true });
 
@@ -90,7 +115,7 @@ export async function getOutfitsForDate(dateKey: string): Promise<DayOutfit[]> {
   const { data: { user } } = await supabase.auth.getUser();
   const { data } = await supabase
     .from("outfits")
-    .select("id, date_key, photo_url, item_ids")
+    .select("id, date_key, photo_url, item_ids, board_canvas_w, board_canvas_h, board_items")
     .eq("user_id", user?.id ?? "")
     .eq("date_key", dateKey)
     .order("created_at", { ascending: true });
@@ -98,12 +123,55 @@ export async function getOutfitsForDate(dateKey: string): Promise<DayOutfit[]> {
   return (data ?? []).map((row) => rowToOutfit(row as Record<string, unknown>));
 }
 
+// ─── Wear counts ──────────────────────────────────────────────────────────────
+
+/** Increment or decrement `closet.wears` for the given items (floored at 0). */
+export async function adjustWears(ids: string[], delta: 1 | -1): Promise<void> {
+  if (ids.length === 0) return;
+  const supabase = getSupabase();
+  const { data: rows } = await supabase
+    .from("closet")
+    .select("id, wears")
+    .in("id", ids);
+  for (const row of rows ?? []) {
+    const newWears = Math.max(0, ((row.wears as number) ?? 0) + delta);
+    await supabase.from("closet").update({ wears: newWears }).eq("id", row.id);
+  }
+}
+
+/**
+ * Item ids that appear in any outfit on `dateKey`, optionally excluding one
+ * outfit. Wears are capped at one per item per day: callers skip +1 for items
+ * already in this set, and skip -1 for items still in it.
+ */
+export async function getWornItemIdsForDate(
+  dateKey: string,
+  excludeOutfitId?: string,
+): Promise<Set<string>> {
+  const supabase = getSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  let query = supabase
+    .from("outfits")
+    .select("id, item_ids")
+    .eq("user_id", user?.id ?? "")
+    .eq("date_key", dateKey);
+  if (excludeOutfitId) query = query.neq("id", excludeOutfitId);
+  const { data } = await query;
+
+  const worn = new Set<string>();
+  for (const row of data ?? []) {
+    for (const id of (row.item_ids as string[]) ?? []) worn.add(id);
+  }
+  return worn;
+}
+
 // ─── Write ────────────────────────────────────────────────────────────────────
 
-/** Save an outfit with no photo. */
+/** Save an outfit with no photo, optionally carrying its board arrangement. */
 export async function saveOutfitItemsOnly(
   itemIds: string[],
   dateKey?: string,
+  board?: DayOutfitBoard | null,
 ): Promise<void> {
   const key = dateKey ?? getTodayDateKey();
   const supabase = getSupabase();
@@ -115,6 +183,9 @@ export async function saveOutfitItemsOnly(
     date_key: key,
     photo_url: null,
     item_ids: [...itemIds],
+    board_canvas_w: board?.canvasW ?? null,
+    board_canvas_h: board?.canvasH ?? null,
+    board_items: board?.items ?? null,
   });
 }
 
@@ -123,12 +194,13 @@ export async function saveOutfitWithPhoto(
   itemIds: string[],
   localPhotoUri: string,
   dateKey?: string,
+  opts?: { skipCameraRoll?: boolean },
 ): Promise<void> {
   const key = dateKey ?? getTodayDateKey();
   const supabase = getSupabase();
   const { data: { user } } = await supabase.auth.getUser();
 
-  saveToCameraRoll(localPhotoUri);
+  if (!opts?.skipCameraRoll) saveToCameraRoll(localPhotoUri);
 
   const photoUrl = await uploadOutfitPhoto(localPhotoUri, user?.id);
 
@@ -155,6 +227,24 @@ export async function saveOutfitForToday(itemIds: string[]): Promise<void> {
 
 // ─── Update ───────────────────────────────────────────────────────────────────
 
+/** Edit an existing outfit's items and board arrangement (no photo involved). */
+export async function updateOutfitBoard(
+  outfitId: string,
+  itemIds: string[],
+  board: DayOutfitBoard,
+): Promise<void> {
+  const supabase = getSupabase();
+  await supabase
+    .from("outfits")
+    .update({
+      item_ids: [...itemIds],
+      board_canvas_w: board.canvasW,
+      board_canvas_h: board.canvasH,
+      board_items: board.items,
+    })
+    .eq("id", outfitId);
+}
+
 /**
  * Edit an existing outfit's items and/or photo.
  * - `newPhotoUri === null`             → user cleared the photo
@@ -167,6 +257,7 @@ export async function updateOutfit(
   itemIds: string[],
   newPhotoUri: string | null,
   originalPhotoUri: string,
+  opts?: { skipCameraRoll?: boolean },
 ): Promise<void> {
   const supabase = getSupabase();
   const { data: { user } } = await supabase.auth.getUser();
@@ -181,7 +272,7 @@ export async function updateOutfit(
     }
   } else if (newPhotoUri !== originalPhotoUri) {
     // New local photo selected — upload it, then delete the old one
-    saveToCameraRoll(newPhotoUri);
+    if (!opts?.skipCameraRoll) saveToCameraRoll(newPhotoUri);
     finalPhotoUrl = await uploadOutfitPhoto(newPhotoUri, user?.id);
     if (originalPhotoUri) {
       await deleteOutfitPhoto(originalPhotoUri).catch(() => {});
@@ -197,19 +288,39 @@ export async function updateOutfit(
 // ─── Delete ───────────────────────────────────────────────────────────────────
 
 export async function deleteOutfit(
-  _dateKey: string,
+  dateKey: string,
   outfitId: string,
 ): Promise<void> {
   const supabase = getSupabase();
 
-  // Fetch the photo URL before deleting so we can clean up storage
+  // Fetch the row before deleting so we can clean up storage and undo wears
   const { data } = await supabase
     .from("outfits")
-    .select("photo_url")
+    .select("photo_url, item_ids, date_key")
     .eq("id", outfitId)
     .single();
 
   await supabase.from("outfits").delete().eq("id", outfitId);
+
+  // Undo the wear this outfit contributed. Skipped: Daily Stack items (they
+  // accrue wears per-day via creditDailyStackWears, not per-outfit) and items
+  // still in another outfit on the same day (max one wear per item per day).
+  const itemIds = (data?.item_ids as string[] | null) ?? [];
+  if (itemIds.length > 0) {
+    const stillWorn = await getWornItemIdsForDate(
+      (data?.date_key as string | null) ?? dateKey,
+    );
+    const { data: rows } = await supabase
+      .from("closet")
+      .select("id, wears, category")
+      .in("id", itemIds);
+    for (const row of rows ?? []) {
+      if (row.category === DAILY_STACK_CATEGORY_NAME) continue;
+      if (stillWorn.has(row.id as string)) continue;
+      const newWears = Math.max(0, ((row.wears as number) ?? 0) - 1);
+      await supabase.from("closet").update({ wears: newWears }).eq("id", row.id);
+    }
+  }
 
   if (data?.photo_url) {
     await deleteOutfitPhoto(data.photo_url as string).catch(() => {});
@@ -232,11 +343,12 @@ function normalizeLegacyMap(raw: Record<string, unknown>): Record<string, DayOut
           id: o.id ?? `${dateKey}-${i}-legacy`,
           photoUri: o.photoUri ?? "",
           itemIds: Array.isArray(o.itemIds) ? o.itemIds : [],
+          board: null,
         };
       });
     } else if (typeof val === "object" && val !== null && "photoUri" in val) {
       const o = val as { photoUri: string; itemIds?: string[] };
-      out[dateKey] = [{ id: `${dateKey}-0-legacy`, photoUri: o.photoUri, itemIds: o.itemIds ?? [] }];
+      out[dateKey] = [{ id: `${dateKey}-0-legacy`, photoUri: o.photoUri, itemIds: o.itemIds ?? [], board: null }];
     }
   }
   return out;

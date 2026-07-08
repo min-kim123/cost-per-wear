@@ -35,6 +35,7 @@ function clamp(value: number, min: number, max: number): number {
 //   "edit"    → single image; emits the cropped uri back to edit-closet-item.
 //   "add"     → emits all cropped uris back to add-closet-item (already on the stack).
 //   "add-new" → replaces this screen with add-closet-item (library picks from the closet FAB).
+//   "review"  → single image; emits the cropped uri back to add-closet-item's review screen.
 export default function CropImageScreen() {
   const router = useRouter();
   const { uri, uris, returnTo, id } = useLocalSearchParams<{
@@ -252,6 +253,9 @@ export default function CropImageScreen() {
           params: { capturedUris: JSON.stringify(croppedRef.current) },
         });
       } else if (returnTo === "edit" && id) {
+        emitImageCaptured(cropped.uri);
+        router.back();
+      } else if (returnTo === "review") {
         emitImageCaptured(cropped.uri);
         router.back();
       } else {

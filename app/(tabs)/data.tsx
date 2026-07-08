@@ -1,4 +1,5 @@
-import { useFocusEffect } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -12,6 +13,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
+import { CLOSET_CANDIDATES_CATEGORY_NAME } from "@/lib/categories";
 import { getSnapshots, upsertTodaySnapshot } from "@/lib/cpw-history";
 import { getOutfitsMap, getTodayDateKey } from "@/lib/outfit-storage";
 import { getSupabase } from "@/lib/supabase-client";
@@ -63,8 +65,15 @@ const ALL_MONTHLY_LABEL_THRESHOLD_DAYS = 35;
 // ─── Data helpers ─────────────────────────────────────────────────────────────
 
 async function loadItems(): Promise<ClosetItem[]> {
-  const { data } = await getSupabase().from("closet").select("id, cost, wears");
-  return (data ?? []).map((row) => {
+  const { data } = await getSupabase()
+    .from("closet")
+    .select("id, cost, wears, category");
+  // Closet Candidates are try-before-you-buy items — they don't count
+  // toward the closet's total CPW or the other closet-wide stats.
+  const owned = (data ?? []).filter(
+    (row) => row.category !== CLOSET_CANDIDATES_CATEGORY_NAME,
+  );
+  return owned.map((row) => {
     const costRaw = row.cost;
     const cost =
       typeof costRaw === "string"
@@ -459,11 +468,16 @@ function LineChart({
 
 export default function DataScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
 
   const [items, setItems] = useState<ClosetItem[]>([]);
   const [denseSeries, setDenseSeries] = useState<DailyPoint[]>([]);
   const [range, setRange] = useState<RangeKey>("1M");
   const [loading, setLoading] = useState(true);
+
+  const openSettings = useCallback(() => {
+    router.push("/settings");
+  }, [router]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -513,10 +527,21 @@ export default function DataScreen() {
 
   return (
     <ThemedView style={{ flex: 1 }}>
+      <View style={styles.header}>
+        <Pressable
+          onPress={openSettings}
+          hitSlop={8}
+          style={({ pressed }) => pressed && { opacity: 0.6 }}
+          accessibilityRole="button"
+          accessibilityLabel="Profile menu"
+        >
+          <Ionicons name="person-circle-outline" size={32} color={textColor} />
+        </Pressable>
+      </View>
       <ScrollView
         contentContainerStyle={[
           styles.scroll,
-          { paddingTop: 20, paddingBottom: insets.bottom + 32 },
+          { paddingTop: 8, paddingBottom: insets.bottom + 32 },
         ]}
         showsVerticalScrollIndicator={false}
       >
@@ -589,6 +614,7 @@ export default function DataScreen() {
           </>
         )}
       </ScrollView>
+
     </ThemedView>
   );
 }
@@ -601,6 +627,14 @@ const styles = StyleSheet.create({
   },
   loader: {
     marginTop: 60,
+  },
+
+  // Header
+  header: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    paddingHorizontal: 18,
+    paddingTop: 12,
   },
 
   // Stat row

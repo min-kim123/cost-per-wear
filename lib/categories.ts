@@ -18,20 +18,21 @@ const DEFAULT_CATEGORY_NAMES = [
 /** Special category: items in it accrue +1 wear per elapsed day (see creditDailyStackWears). */
 export const DAILY_STACK_CATEGORY_NAME = "daily stack";
 
-/** Insert the Daily Stack category (positioned before everything else) if the user doesn't have it yet. */
-async function ensureDailyStackCategory(
+/** Special category: items in it are excluded from the closet's total
+ *  cost-per-wear (and the data tab's closet-wide stats). */
+export const CLOSET_CANDIDATES_CATEGORY_NAME = "closet candidates";
+
+/** Insert one missing special category; tolerates a concurrent insert. */
+async function insertSpecialCategory(
   supabase: ReturnType<typeof getSupabase>,
   userId: string | undefined,
+  name: string,
+  position: number,
   existing: CategoryRow[],
 ): Promise<CategoryRow[]> {
-  if (existing.some((c) => c.name === DAILY_STACK_CATEGORY_NAME)) return existing;
-
-  const topPosition =
-    existing.length > 0 ? Math.min(...existing.map((c) => c.position)) - 1 : 0;
-
   const { data, error } = await supabase
     .from("categories")
-    .insert({ user_id: userId ?? null, name: DAILY_STACK_CATEGORY_NAME, position: topPosition })
+    .insert({ user_id: userId ?? null, name, position })
     .select("id, name, position")
     .single();
   if (error) {
@@ -39,10 +40,35 @@ async function ensureDailyStackCategory(
     if (error.code === "23505") return existing;
     throw new Error(error.message);
   }
-  return [data as CategoryRow, ...existing].sort((a, b) => a.position - b.position);
+  return [...existing, data as CategoryRow].sort((a, b) => a.position - b.position);
 }
 
-/** Load this user's categories, lazily seeding the legacy defaults (and the Daily Stack category) on first use. */
+/** Ensure the default special categories exist: Daily Stack before
+ *  everything else, Closet Candidates after everything else. */
+async function ensureSpecialCategories(
+  supabase: ReturnType<typeof getSupabase>,
+  userId: string | undefined,
+  existing: CategoryRow[],
+): Promise<CategoryRow[]> {
+  let rows = existing;
+  if (!rows.some((c) => c.name === DAILY_STACK_CATEGORY_NAME)) {
+    const topPosition =
+      rows.length > 0 ? Math.min(...rows.map((c) => c.position)) - 1 : 0;
+    rows = await insertSpecialCategory(
+      supabase, userId, DAILY_STACK_CATEGORY_NAME, topPosition, rows,
+    );
+  }
+  if (!rows.some((c) => c.name === CLOSET_CANDIDATES_CATEGORY_NAME)) {
+    const bottomPosition =
+      rows.length > 0 ? Math.max(...rows.map((c) => c.position)) + 1 : 0;
+    rows = await insertSpecialCategory(
+      supabase, userId, CLOSET_CANDIDATES_CATEGORY_NAME, bottomPosition, rows,
+    );
+  }
+  return rows;
+}
+
+/** Load this user's categories, lazily seeding the legacy defaults (and the special categories) on first use. */
 export async function listCategories(): Promise<CategoryRow[]> {
   const supabase = getSupabase();
   const {
@@ -56,7 +82,7 @@ export async function listCategories(): Promise<CategoryRow[]> {
     .order("position", { ascending: true });
   if (error) throw new Error(error.message);
   if (data && data.length > 0) {
-    return ensureDailyStackCategory(supabase, user?.id, data as CategoryRow[]);
+    return ensureSpecialCategories(supabase, user?.id, data as CategoryRow[]);
   }
 
   const { data: seeded, error: seedError } = await supabase
@@ -70,7 +96,7 @@ export async function listCategories(): Promise<CategoryRow[]> {
     )
     .select("id, name, position");
   if (seedError) throw new Error(seedError.message);
-  return ensureDailyStackCategory(supabase, user?.id, (seeded ?? []) as CategoryRow[]);
+  return ensureSpecialCategories(supabase, user?.id, (seeded ?? []) as CategoryRow[]);
 }
 
 /**
@@ -151,6 +177,20 @@ export async function reorderCategories(orderedIds: string[]): Promise<void> {
   if (failed?.error) throw new Error(failed.error.message);
 }
 
+/** Persist a new drag-and-drop order for the items of one category.
+ *  `orderedIds` is that category's item ids in the desired order; positions are
+ *  per-category (0..n), so other categories' orderings are untouched. */
+export async function reorderClosetItems(orderedIds: string[]): Promise<void> {
+  const supabase = getSupabase();
+  const results = await Promise.all(
+    orderedIds.map((id, position) =>
+      supabase.from("closet").update({ position }).eq("id", id),
+    ),
+  );
+  const failed = results.find((r) => r.error);
+  if (failed?.error) throw new Error(failed.error.message);
+}
+
 // ─── Shared grouping helpers (closet grid, outfit picker, …) ──────────────────
 
 export type CategorySection<T> = {
@@ -159,10 +199,12 @@ export type CategorySection<T> = {
   items: T[];
 };
 
-/** Group items by category, ordered to match the user's category list, with an "Uncategorized" tail. */
+/** Group items by category, ordered to match the user's category list, with an "Uncategorized" tail.
+ *  With `includeEmpty`, categories without items are kept (Uncategorized still only appears when non-empty). */
 export function groupByCategory<T extends { category: string | null }>(
   items: T[],
   categories: CategoryRow[],
+  opts: { includeEmpty?: boolean } = {},
 ): CategorySection<T>[] {
   const byCategory = new Map<string, T[]>();
   for (const item of items) {
@@ -173,11 +215,13 @@ export function groupByCategory<T extends { category: string | null }>(
   }
   const order = [...categories.map((c) => c.name), "uncategorized"];
   return order
-    .filter((key) => byCategory.has(key))
+    .filter((key) =>
+      opts.includeEmpty && key !== "uncategorized" ? true : byCategory.has(key),
+    )
     .map((key) => ({
       key,
       label: key === "uncategorized" ? "Uncategorized" : key.charAt(0).toUpperCase() + key.slice(1),
-      items: byCategory.get(key)!,
+      items: byCategory.get(key) ?? [],
     }));
 }
 

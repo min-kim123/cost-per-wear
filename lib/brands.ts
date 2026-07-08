@@ -1,7 +1,4 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getSupabase } from "@/lib/supabase-client";
-
-const KEY = "@cpw_custom_brands_v1";
 
 const DEFAULT_BRANDS = [
   "Acne Studios", "Adidas", "Alexander McQueen", "Alexander Wang",
@@ -28,8 +25,16 @@ let cache: string[] | null = null;
 export async function getBrands(): Promise<string[]> {
   if (cache) return cache;
   try {
-    const raw = await AsyncStorage.getItem(KEY);
-    const custom: string[] = raw ? (JSON.parse(raw) as string[]) : [];
+    const supabase = getSupabase();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    const { data, error } = await supabase
+      .from("brands")
+      .select("name")
+      .eq("user_id", user?.id ?? "");
+    if (error) throw new Error(error.message);
+    const custom = (data ?? []).map((row) => row.name as string);
     const all = Array.from(new Set([...DEFAULT_BRANDS, ...custom])).sort((a, b) =>
       a.localeCompare(b),
     );
@@ -61,12 +66,15 @@ export async function addBrand(name: string): Promise<void> {
   const all = await getBrands();
   if (all.some((b) => b.toLowerCase() === trimmed.toLowerCase())) return;
   try {
-    const raw = await AsyncStorage.getItem(KEY);
-    const custom: string[] = raw ? (JSON.parse(raw) as string[]) : [];
-    if (!custom.some((b) => b.toLowerCase() === trimmed.toLowerCase())) {
-      custom.push(trimmed);
-      await AsyncStorage.setItem(KEY, JSON.stringify(custom));
-    }
+    const supabase = getSupabase();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    const { error } = await supabase
+      .from("brands")
+      .insert({ user_id: user?.id ?? null, name: trimmed });
+    // A concurrent add (or a case-different duplicate) is fine to ignore.
+    if (error && error.code !== "23505") throw new Error(error.message);
     cache = null; // invalidate cache so next getBrands() re-reads
   } catch {
     // ignore storage errors

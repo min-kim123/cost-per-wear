@@ -10,6 +10,7 @@ import {
   View,
 } from "react-native";
 
+import { SpeckleFade } from "@/components/speckle-fade";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { TAB_META } from "@/constants/tabs";
@@ -18,9 +19,9 @@ import { useDevTabVisibility } from "@/lib/dev-tab-visibility";
 import { useDevToggle } from "@/lib/dev-toggles";
 import { getSupabase } from "@/lib/supabase-client";
 
-// Every tab except Settings itself can be hidden — Settings always stays
-// reachable so toggling tabs off can never lock you out of this screen.
-const TOGGLEABLE_TABS = TAB_META.filter((t) => t.key !== "settings");
+// Every tab except Data can be hidden — Settings is opened from the profile
+// menu on the Data tab, so hiding Data would lock you out of this screen.
+const TOGGLEABLE_TABS = TAB_META.filter((t) => t.key !== "data");
 
 
 export default function SettingsScreen() {
@@ -37,6 +38,8 @@ export default function SettingsScreen() {
   ] as const;
 
   const borderColor = useThemeColor({ light: "#C6C6C8" }, "icon");
+  const inputBackground = useThemeColor({ light: "#ffffff" }, "background");
+  const iconColor = useThemeColor({}, "text");
   const destructiveColor = "#C00";
 
   const doSignOut = async () => {
@@ -57,12 +60,8 @@ export default function SettingsScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      <ThemedText type="title" style={styles.heading}>
-        Settings
-      </ThemedText>
-
-      <View style={[styles.section, { borderColor }]}>
-        {confirming ? (
+      {confirming ? (
+        <View style={[styles.section, { borderColor, backgroundColor: inputBackground }]}>
           <View style={styles.confirmRow}>
             <ThemedText style={[styles.confirmText, { color: destructiveColor }]}>
               Sign out of your account?
@@ -90,44 +89,40 @@ export default function SettingsScreen() {
               </Pressable>
             </View>
           </View>
-        ) : (
-          <Pressable
-            onPress={() => setConfirming(true)}
-            disabled={signingOut}
-            style={({ pressed }) => [
-              styles.row,
-              pressed && styles.btnPressed,
-              signingOut && styles.rowDisabled,
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel="Sign out"
-          >
-            <Ionicons name="log-out-outline" size={22} color={destructiveColor} />
-            <ThemedText style={[styles.rowLabel, { color: destructiveColor }]}>
-              Sign out
-            </ThemedText>
-          </Pressable>
-        )}
-      </View>
+        </View>
+      ) : (
+        <Pressable
+          onPress={() => setConfirming(true)}
+          disabled={signingOut}
+          style={({ pressed }) => [
+            styles.section,
+            styles.row,
+            { borderColor, backgroundColor: inputBackground },
+            pressed && styles.btnPressed,
+            signingOut && styles.rowDisabled,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Sign out"
+        >
+          <Ionicons name="log-out-outline" size={18} color={destructiveColor} />
+          <ThemedText style={[styles.rowLabel, { color: destructiveColor }]}>
+            Sign out
+          </ThemedText>
+        </Pressable>
+      )}
 
       {__DEV__ && (
         <View style={styles.devSection}>
           <ThemedText style={styles.devHeading}>
             Dev: navbar tabs
           </ThemedText>
-          <View style={[styles.section, { borderColor }]}>
-            {TOGGLEABLE_TABS.map((tab, i) => (
+          <View style={styles.sectionGroup}>
+            {TOGGLEABLE_TABS.map((tab) => (
               <View
                 key={tab.key}
-                style={[
-                  styles.row,
-                  i < TOGGLEABLE_TABS.length - 1 && {
-                    borderBottomWidth: StyleSheet.hairlineWidth,
-                    borderBottomColor: borderColor,
-                  },
-                ]}
+                style={[styles.section, styles.row, { borderColor, backgroundColor: inputBackground }]}
               >
-                <Ionicons name={tab.icon.default as never} size={22} color={borderColor} />
+                <Ionicons name={tab.icon.default as never} size={18} color={iconColor} />
                 <ThemedText style={styles.rowLabel}>{tab.title}</ThemedText>
                 <View style={styles.rowSpacer} />
                 <Switch
@@ -145,19 +140,13 @@ export default function SettingsScreen() {
           <ThemedText style={styles.devHeading}>
             Dev: closet UI
           </ThemedText>
-          <View style={[styles.section, { borderColor }]}>
-            {closetToggles.map((t, i) => (
+          <View style={styles.sectionGroup}>
+            {closetToggles.map((t) => (
               <View
                 key={t.label}
-                style={[
-                  styles.row,
-                  i < closetToggles.length - 1 && {
-                    borderBottomWidth: StyleSheet.hairlineWidth,
-                    borderBottomColor: borderColor,
-                  },
-                ]}
+                style={[styles.section, styles.row, { borderColor, backgroundColor: inputBackground }]}
               >
-                <Ionicons name={t.icon as never} size={22} color={borderColor} />
+                <Ionicons name={t.icon as never} size={18} color={iconColor} />
                 <ThemedText style={styles.rowLabel}>{t.label}</ThemedText>
                 <View style={styles.rowSpacer} />
                 <Switch value={!t.hidden} onValueChange={t.toggle} />
@@ -166,6 +155,8 @@ export default function SettingsScreen() {
           </View>
         </View>
       )}
+
+      <SpeckleFade height={72} edge="bottom" />
     </ThemedView>
   );
 }
@@ -176,26 +167,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 24,
   },
-  heading: {
-    marginBottom: 28,
-  },
   section: {
+    height: 40,
     borderWidth: 1,
-    borderRadius: 12,
-    overflow: "hidden",
+    borderRadius: 10,
+  },
+  sectionGroup: {
+    gap: 8,
   },
   row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
+    gap: 10,
+    paddingHorizontal: 12,
   },
   rowDisabled: {
     opacity: 0.5,
   },
   rowLabel: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "500",
   },
   rowSpacer: {
@@ -212,20 +202,23 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   confirmRow: {
-    padding: 16,
-    gap: 12,
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 12,
   },
   confirmText: {
-    fontSize: 15,
-    textAlign: "center",
+    flex: 1,
+    fontSize: 13,
   },
   confirmButtons: {
     flexDirection: "row",
-    gap: 10,
+    gap: 8,
   },
   confirmBtn: {
-    flex: 1,
-    height: 44,
+    height: 28,
+    paddingHorizontal: 12,
     borderRadius: 8,
     borderWidth: 1,
     alignItems: "center",
@@ -236,7 +229,7 @@ const styles = StyleSheet.create({
     borderColor: "#C00",
   },
   confirmBtnLabel: {
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: "600",
   },
   btnPressed: {

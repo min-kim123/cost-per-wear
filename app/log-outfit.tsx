@@ -25,7 +25,9 @@ import {
   type CategoryRow,
 } from "@/lib/categories";
 import {
+  adjustWears,
   getOutfitsForDate,
+  getWornItemIdsForDate,
   saveOutfitItemsOnly,
   saveOutfitWithPhoto,
   updateOutfit,
@@ -53,6 +55,7 @@ async function loadItems(): Promise<ClosetItem[]> {
   const { data, error } = await getSupabase()
     .from("closet")
     .select("id, brand, name, image, cost, wears, category")
+    .order("position", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: false });
   if (error) throw new Error(error.message);
   return (data ?? []).map((row) => {
@@ -92,6 +95,9 @@ export default function LogOutfitScreen() {
   const [saving, setSaving] = useState(false);
   const [outfitPhotoUri, setOutfitPhotoUri] = useState<string | null>(null);
   const [originalPhotoUri, setOriginalPhotoUri] = useState<string>("");
+  // Only a fresh in-app camera capture should land in the camera roll — never
+  // a library pick, and never the existing remote photo loaded for editing.
+  const [photoFromCamera, setPhotoFromCamera] = useState(false);
   const [picking, setPicking] = useState(false);
   const [loadingOutfit, setLoadingOutfit] = useState(isEditing);
 
@@ -223,24 +229,12 @@ export default function LogOutfitScreen() {
       }
       if (!result.canceled && result.assets[0]?.uri) {
         setOutfitPhotoUri(result.assets[0].uri);
+        setPhotoFromCamera(mode === "camera");
       }
     } catch (e) {
       Alert.alert("Error", e instanceof Error ? e.message : "Could not pick photo.");
     } finally {
       setPicking(false);
-    }
-  }
-
-  async function adjustWears(ids: string[], delta: 1 | -1) {
-    if (ids.length === 0) return;
-    const supabase = getSupabase();
-    const { data: rows } = await supabase
-      .from("closet")
-      .select("id, wears")
-      .in("id", ids);
-    for (const row of rows ?? []) {
-      const newWears = Math.max(0, ((row.wears as number) ?? 0) + delta);
-      await supabase.from("closet").update({ wears: newWears }).eq("id", row.id);
     }
   }
 
@@ -258,9 +252,20 @@ export default function LogOutfitScreen() {
 
       if (isEditing) {
         const originalIds = initialSelectedIdsRef.current;
-        const added = newIds.filter((id) => !originalIds.has(id));
+        // Wears cap at one per item per day: items in another outfit on this
+        // date already have their wear (skip +1) and keep it (skip -1).
+        const wornElsewhere = await getWornItemIdsForDate(
+          dateKey,
+          outfitId as string,
+        );
+        const added = newIds.filter(
+          (id) => !originalIds.has(id) && !wornElsewhere.has(id),
+        );
         const removed = [...originalIds].filter(
-          (id) => !dailyStackIdSet.has(id) && !newIds.includes(id),
+          (id) =>
+            !dailyStackIdSet.has(id) &&
+            !newIds.includes(id) &&
+            !wornElsewhere.has(id),
         );
         await Promise.all([
           adjustWears(added, 1),
@@ -272,11 +277,20 @@ export default function LogOutfitScreen() {
           finalIds,
           outfitPhotoUri,
           originalPhotoUri,
+          { skipCameraRoll: !photoFromCamera },
         );
       } else {
-        await adjustWears(newIds, 1);
+        const alreadyWorn = await getWornItemIdsForDate(
+          targetDate ?? getTodayDateKey(),
+        );
+        await adjustWears(
+          newIds.filter((id) => !alreadyWorn.has(id)),
+          1,
+        );
         if (outfitPhotoUri) {
-          await saveOutfitWithPhoto(finalIds, outfitPhotoUri, targetDate);
+          await saveOutfitWithPhoto(finalIds, outfitPhotoUri, targetDate, {
+            skipCameraRoll: !photoFromCamera,
+          });
         } else {
           await saveOutfitItemsOnly(finalIds, targetDate);
         }
@@ -388,7 +402,10 @@ export default function LogOutfitScreen() {
               contentFit="cover"
             />
             <Pressable
-              onPress={() => setOutfitPhotoUri(null)}
+              onPress={() => {
+                setOutfitPhotoUri(null);
+                setPhotoFromCamera(false);
+              }}
               style={styles.photoRemoveBtn}
               hitSlop={8}
             >

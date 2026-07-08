@@ -2,15 +2,19 @@ import { DefaultTheme, ThemeProvider } from "@react-navigation/native";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useRef, useState } from "react";
+import { AppState } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ClosetSaveIndicator } from "@/components/closet-save-indicator";
+import { processPendingBgRemovals } from "@/lib/bg-removal-queue";
+import { initBgRemovalPush } from "@/lib/bg-removal-push";
 import { creditDailyStackWears } from "@/lib/categories";
 import { DevTogglesProvider } from "@/lib/dev-toggles";
 import { migrateLocalOutfitsToSupabase } from "@/lib/outfit-storage";
 import { getSupabase } from "@/lib/supabase-client";
+import { TabNavigationContext, useTabNavigationState } from "@/lib/tab-navigation";
 
 export const unstable_settings = {
   anchor: "(tabs)",
@@ -42,6 +46,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
         if (inAuthScreen) router.replace("/(tabs)");
         setChecked(true);
         creditDailyStackWears().catch(() => {});
+        initBgRemovalPush().catch(() => {});
       });
       return;
     }
@@ -60,6 +65,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
       if (session) {
         migrateLocalOutfitsToSupabase().catch(() => {});
         creditDailyStackWears().catch(() => {});
+        initBgRemovalPush().catch(() => {});
       }
     });
 
@@ -72,6 +78,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
           router.replace("/(tabs)");
           migrateLocalOutfitsToSupabase().catch(() => {});
           creditDailyStackWears().catch(() => {});
+          initBgRemovalPush().catch(() => {});
         }
       },
     );
@@ -84,39 +91,60 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 }
 
 export default function RootLayout() {
+  // Sweep the background-removal queue whenever the app returns to the
+  // foreground — catches items whose silent push was throttled or missed.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") processPendingBgRemovals().catch(() => {});
+    });
+    return () => sub.remove();
+  }, []);
+
+  const tabNavigationValue = useTabNavigationState();
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider value={DefaultTheme}>
         <SafeAreaView style={{ flex: 1 }} edges={["top"]}>
           <DevTogglesProvider>
-            <AuthGuard>
-              <Stack>
-                <Stack.Screen name="auth" options={{ headerShown: false }} />
-                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-                <Stack.Screen
-                  name="select-outfit-items"
-                  options={{ title: "Today's outfit", presentation: "modal" }}
-                />
-                <Stack.Screen
-                  name="add-closet-item"
-                  options={{ title: "Add item", presentation: "modal" }}
-                />
-                <Stack.Screen
-                  name="edit-closet-item"
-                  options={{ presentation: "modal", headerShown: false }}
-                />
-                <Stack.Screen
-                  name="web-capture"
-                  options={{ presentation: "fullScreenModal", headerShown: false }}
-                />
-                <Stack.Screen
-                  name="crop-image"
-                  options={{ presentation: "fullScreenModal", headerShown: false }}
-                />
-                <Stack.Screen name="day-outfits" options={{ headerShown: false }} />
-              </Stack>
-            </AuthGuard>
-            <ClosetSaveIndicator />
+            <TabNavigationContext.Provider value={tabNavigationValue}>
+              <AuthGuard>
+                <Stack>
+                  <Stack.Screen name="auth" options={{ headerShown: false }} />
+                  <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+                  <Stack.Screen
+                    name="select-outfit-items"
+                    options={{ title: "Today's outfit", presentation: "modal" }}
+                  />
+                  <Stack.Screen
+                    name="add-closet-item"
+                    options={{ title: "Add item", presentation: "modal" }}
+                  />
+                  <Stack.Screen
+                    name="edit-closet-item"
+                    options={{ presentation: "modal", headerShown: false }}
+                  />
+                  <Stack.Screen
+                    name="web-capture"
+                    options={{ presentation: "fullScreenModal", headerShown: false }}
+                  />
+                  <Stack.Screen
+                    name="crop-image"
+                    options={{ presentation: "fullScreenModal", headerShown: false }}
+                  />
+                  <Stack.Screen name="day-outfits" options={{ headerShown: false }} />
+                  <Stack.Screen
+                    name="outfit-boards"
+                    options={{ title: "Outfit boards" }}
+                  />
+                  <Stack.Screen
+                    name="settings"
+                    options={{ title: "Settings", presentation: "modal" }}
+                  />
+                </Stack>
+              </AuthGuard>
+              <ClosetSaveIndicator />
+            </TabNavigationContext.Provider>
           </DevTogglesProvider>
         </SafeAreaView>
         <StatusBar style="dark" />

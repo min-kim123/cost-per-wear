@@ -2,7 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ImageSourcePropType } from "react-native";
 import {
@@ -25,25 +25,50 @@ import DraggableFlatList, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { type Category } from "@/components/category-picker";
-import { OutfitBoard } from "@/components/outfit-board";
+import {
+  OUTFIT_ITEM_H,
+  OUTFIT_ITEM_W,
+  OutfitBoard,
+  type OutfitBoardSnapshot,
+} from "@/components/outfit-board";
 import { PasteImageButton } from "@/components/paste-image-button";
+import { Swirl } from "@/components/swirl";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
 import {
   addCategory,
   chunkPairs,
+  DAILY_STACK_CATEGORY_NAME,
   deleteCategory,
   groupByCategory,
   listCategories,
   reorderCategories,
+  reorderClosetItems,
   type CategoryRow,
   type CategorySection,
 } from "@/lib/categories";
 import { writeClipboardImageToLocalUri } from "@/lib/clipboard-image";
+import {
+  adjustWears,
+  getOutfitsForDate,
+  getWornItemIdsForDate,
+  saveOutfitItemsOnly,
+  updateOutfitBoard,
+} from "@/lib/outfit-storage";
+import {
+  addSavedOutfit,
+  deleteSavedOutfit,
+  formatBoardDate,
+  listSavedOutfits,
+  updateSavedOutfit,
+  type SavedOutfit,
+} from "@/lib/saved-outfits";
 import { subscribeClosetSaves } from "@/lib/closet-save-queue";
 import { useDevToggle } from "@/lib/dev-toggles";
+import { saveToCameraRoll } from "@/lib/save-to-camera-roll";
 import { getSupabase } from "@/lib/supabase-client";
+import { useTabSwipeLock } from "@/lib/tab-swipe-lock";
 
 type ClothingItem = {
   id: string;
@@ -92,6 +117,7 @@ async function loadClosetFromSupabase(): Promise<ClothingItem[]> {
   const { data, error } = await getSupabase()
     .from("closet")
     .select("id, brand, name, cost, wears, image, category")
+    .order("position", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -130,6 +156,18 @@ function formatMetric(item: ClothingItem, metric: MetricDisplay): string {
     case "cost":
       return formatCurrency(item.cost);
   }
+}
+
+/** "2026-07-06" → "Monday, July 6". Parsed by parts to avoid a UTC timezone shift. */
+function formatOutfitDateLabel(dateKey: string): string {
+  const [y, m, d] = dateKey.split("-").map(Number);
+  if (!y || !m || !d) return dateKey;
+  const date = new Date(y, m - 1, d);
+  return date.toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
 }
 
 function sortItems(items: ClothingItem[], key: SortKey): ClothingItem[] {
@@ -181,12 +219,49 @@ export default function ClosetScreen() {
   const [footerAdding, setFooterAdding] = useState(false);
   const [footerCategoryName, setFooterCategoryName] = useState("");
   const footerInputRef = useRef<TextInput>(null);
-  const [outfitMode, setOutfitMode] = useState(false);
-  const [outfitSelectedIds, setOutfitSelectedIds] = useState<Set<string>>(
+  // Section keys whose rows are expanded into a wrapped grid (no horizontal
+  // scroll); toggled by the swirl button on each section header.
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set(),
   );
+  const [outfitMode, setOutfitMode] = useState(false);
+  // Set when the board was opened from a calendar day (via the "make outfit
+  // board" button on that day's page) — saving writes a dated outfit instead
+  // of a reusable saved-outfit board, and the board header shows the date.
+  const [outfitForDate, setOutfitForDate] = useState<string | null>(null);
   const [boardItems, setBoardItems] = useState<ClothingItem[]>([]);
   const [boardExpanded, setBoardExpanded] = useState(false);
+  const [savedOutfits, setSavedOutfits] = useState<SavedOutfit[]>([]);
+  const [savingOutfit, setSavingOutfit] = useState(false);
+  const [editingOutfitId, setEditingOutfitId] = useState<string | null>(null);
+  // Set when editing an existing dated outfit's board (tapped from the day
+  // page) — saving updates that outfit row instead of inserting a new one.
+  const [editingDayOutfitId, setEditingDayOutfitId] = useState<string | null>(
+    null,
+  );
+  const editingDayOutfitOriginalIdsRef = useRef<Set<string>>(new Set());
+  const [editingSnapshot, setEditingSnapshot] =
+    useState<OutfitBoardSnapshot | null>(null);
+  const boardDirtyRef = useRef(false);
+  const boardHistoryPushedRef = useRef(false);
+  const ignoreBoardPopRef = useRef(false);
+  const markBoardDirty = useCallback(() => {
+    boardDirtyRef.current = true;
+  }, []);
+
+  const dismissBoardHistory = useCallback(() => {
+    if (Platform.OS !== "web" || !boardHistoryPushedRef.current) return;
+    boardHistoryPushedRef.current = false;
+    ignoreBoardPopRef.current = true;
+    window.history.back();
+  }, []);
+  const { setSwipeLocked } = useTabSwipeLock();
+
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    setSwipeLocked(boardExpanded);
+    return () => setSwipeLocked(false);
+  }, [boardExpanded, setSwipeLocked]);
 
   useEffect(() => {
     if (addingCategory) {
@@ -267,9 +342,14 @@ export default function ClosetScreen() {
     return counts;
   }, [items]);
 
+  // Empty categories stay visible in the default view; hide them while
+  // searching or filtering so those views only show matching sections.
   const sections = useMemo(
-    () => groupByCategory(filteredItems, categories),
-    [filteredItems, categories],
+    () =>
+      groupByCategory(filteredItems, categories, {
+        includeEmpty: !searchQuery.trim() && !categoryFilter,
+      }),
+    [filteredItems, categories, searchQuery, categoryFilter],
   );
 
   const draggableSections = useMemo(
@@ -281,13 +361,25 @@ export default function ClosetScreen() {
     [sections],
   );
   const canReorderSections = !searchQuery.trim() && !categoryFilter;
+  // Item drag-to-reorder only makes sense when the row shows the real stored
+  // order — not a searched subset or a computed sort. (Native only: the
+  // draggable list breaks scrolling on web.)
+  const canReorderItems =
+    Platform.OS !== "web" && !searchQuery.trim() && !sortKey;
+
+  const loadSavedOutfits = useCallback(() => {
+    return listSavedOutfits()
+      .then(setSavedOutfits)
+      .catch(() => setSavedOutfits([]));
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
       loadItems({ silent: true });
       loadCategories();
       checkGmailAccess();
-    }, [loadItems, loadCategories, checkGmailAccess]),
+      loadSavedOutfits();
+    }, [loadItems, loadCategories, checkGmailAccess, loadSavedOutfits]),
   );
 
   // Items save in the background after the add-item modal dismisses; refresh
@@ -404,6 +496,29 @@ export default function ClosetScreen() {
     [handleReorderCategories],
   );
 
+  const handleItemsDragEnd = useCallback(
+    (sectionKey: string, ordered: ClothingItem[]) => {
+      // Splice the section's new order back into the full items list so every
+      // derived view (sections, filters) updates immediately.
+      setItems((prev) => {
+        const queue = [...ordered];
+        return prev.map((it) =>
+          (it.category ?? "uncategorized") === sectionKey
+            ? (queue.shift() ?? it)
+            : it,
+        );
+      });
+      reorderClosetItems(ordered.map((i) => i.id)).catch((e) => {
+        Alert.alert(
+          "Could not save order",
+          e instanceof Error ? e.message : "Unknown error",
+        );
+        loadItems({ silent: true });
+      });
+    },
+    [loadItems],
+  );
+
   const handleSectionDragEnd = useCallback(
     ({ data }: { data: CategorySection<ClothingItem>[] }) => {
       const newOrderNames = data.map((s) => s.key);
@@ -465,47 +580,308 @@ export default function ClosetScreen() {
     [categoryFilter, deletingCategoryId, placeholderColor, handleDeleteCategory, categoryCounts],
   );
 
-  function toggleOutfitSelected(id: string) {
-    setOutfitSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  // Tapping a closet card in outfit mode adds/removes it on the board right
+  // away — the mini preview reflects the selection live.
+  function toggleOutfitSelected(item: ClothingItem) {
+    setBoardItems((prev) =>
+      prev.some((i) => i.id === item.id)
+        ? prev.filter((i) => i.id !== item.id)
+        : [...prev, item],
+    );
   }
 
   function handleDoneSelecting() {
-    if (outfitSelectedIds.size === 0) {
-      if (boardItems.length === 0) setOutfitMode(false);
+    if (boardItems.length === 0) {
+      exitOutfitMode();
       return;
     }
-    setBoardItems((prev) => {
-      const existing = new Set(prev.map((i) => i.id));
-      const additions = items.filter(
-        (i) => outfitSelectedIds.has(i.id) && !existing.has(i.id),
-      );
-      return [...prev, ...additions];
-    });
-    setOutfitSelectedIds(new Set());
+    setBoardExpanded(true);
   }
 
-  function exitOutfitMode() {
+  function exitOutfitMode(options?: { fromPopState?: boolean }) {
+    if (
+      Platform.OS === "web" &&
+      boardHistoryPushedRef.current &&
+      !options?.fromPopState
+    ) {
+      dismissBoardHistory();
+    } else {
+      boardHistoryPushedRef.current = false;
+    }
     setBoardItems([]);
-    setOutfitSelectedIds(new Set());
     setBoardExpanded(false);
     setOutfitMode(false);
+    setOutfitForDate(null);
+    setEditingOutfitId(null);
+    setEditingDayOutfitId(null);
+    setEditingSnapshot(null);
+    boardDirtyRef.current = false;
   }
 
   function closeOutfitBoard() {
-    Alert.alert("Discard outfit?", "Items on the board will be cleared.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Discard", style: "destructive", onPress: exitOutfitMode },
-    ]);
+    // No layout edits on the board — return to the closet list as-is.
+    if (!boardDirtyRef.current) {
+      exitOutfitMode();
+      return;
+    }
+    const isEditingExisting = editingOutfitId || editingDayOutfitId;
+    Alert.alert(
+      isEditingExisting ? "Discard changes?" : "Discard outfit?",
+      isEditingExisting
+        ? "The outfit will keep its last saved layout."
+        : "Items on the board will be cleared.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Discard", style: "destructive", onPress: () => exitOutfitMode() },
+      ],
+    );
   }
 
+  useEffect(() => {
+    if (Platform.OS !== "web" || !boardExpanded) return;
+
+    window.history.pushState({ outfitBoard: true }, "");
+    boardHistoryPushedRef.current = true;
+
+    const onPopState = () => {
+      if (ignoreBoardPopRef.current) {
+        ignoreBoardPopRef.current = false;
+        return;
+      }
+      if (boardDirtyRef.current) {
+        window.history.pushState({ outfitBoard: true }, "");
+        boardHistoryPushedRef.current = true;
+        closeOutfitBoard();
+        return;
+      }
+      boardHistoryPushedRef.current = false;
+      exitOutfitMode({ fromPopState: true });
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [boardExpanded, editingOutfitId, editingDayOutfitId]);
+
   function removeBoardItem(id: string) {
+    boardDirtyRef.current = true;
     setBoardItems((prev) => prev.filter((i) => i.id !== id));
   }
+
+  async function handleSaveOutfit(snapshot: OutfitBoardSnapshot) {
+    if (savingOutfit) return;
+    setSavingOutfit(true);
+    try {
+      if (editingDayOutfitId && outfitForDate) {
+        const dateKey = outfitForDate;
+        const itemIds = boardItems.map((i) => i.id);
+        const wearableIds = itemIds.filter(
+          (id) => itemsById.get(id)?.category !== DAILY_STACK_CATEGORY_NAME,
+        );
+        const originalIds = editingDayOutfitOriginalIdsRef.current;
+        // Wears cap at one per item per day: items in another outfit on this
+        // date already have their wear (skip +1) and keep it (skip -1).
+        const wornElsewhere = await getWornItemIdsForDate(
+          dateKey,
+          editingDayOutfitId,
+        );
+        const added = wearableIds.filter(
+          (id) => !originalIds.has(id) && !wornElsewhere.has(id),
+        );
+        const removed = [...originalIds].filter(
+          (id) =>
+            itemsById.get(id)?.category !== DAILY_STACK_CATEGORY_NAME &&
+            !wearableIds.includes(id) &&
+            !wornElsewhere.has(id),
+        );
+        await Promise.all([adjustWears(added, 1), adjustWears(removed, -1)]);
+        await updateOutfitBoard(editingDayOutfitId, itemIds, {
+          canvasW: snapshot.canvasW,
+          canvasH: snapshot.canvasH,
+          items: snapshot.items,
+        });
+        exitOutfitMode();
+        router.push(`/day-outfits/${dateKey}`);
+        return;
+      }
+      if (outfitForDate) {
+        const dateKey = outfitForDate;
+        const itemIds = boardItems.map((i) => i.id);
+        const wearableIds = itemIds.filter(
+          (id) => itemsById.get(id)?.category !== DAILY_STACK_CATEGORY_NAME,
+        );
+        const alreadyWorn = await getWornItemIdsForDate(dateKey);
+        await adjustWears(
+          wearableIds.filter((id) => !alreadyWorn.has(id)),
+          1,
+        );
+        await saveOutfitItemsOnly(itemIds, dateKey, {
+          canvasW: snapshot.canvasW,
+          canvasH: snapshot.canvasH,
+          items: snapshot.items,
+        });
+        exitOutfitMode();
+        router.push(`/day-outfits/${dateKey}`);
+        return;
+      }
+      if (editingOutfitId) {
+        await updateSavedOutfit(editingOutfitId, snapshot);
+        setSavedOutfits((prev) =>
+          prev.map((o) =>
+            o.id === editingOutfitId ? { ...o, ...snapshot } : o,
+          ),
+        );
+      } else {
+        const saved = await addSavedOutfit(snapshot);
+        setSavedOutfits((prev) => [saved, ...prev]);
+      }
+      exitOutfitMode();
+    } catch (e) {
+      Alert.alert(
+        "Could not save outfit",
+        e instanceof Error ? e.message : "Unknown error",
+      );
+    } finally {
+      setSavingOutfit(false);
+    }
+  }
+
+  function openSavedOutfitForEdit(outfit: SavedOutfit) {
+    if (outfitMode) return; // already building/editing an outfit
+    const boardable = outfit.items
+      .map((si) => itemsById.get(si.id))
+      .filter((i): i is ClothingItem => i !== undefined);
+    if (boardable.length === 0) {
+      Alert.alert(
+        "Nothing to edit",
+        "The items in this outfit are no longer in your closet.",
+      );
+      return;
+    }
+    boardDirtyRef.current = false;
+    setBoardItems(boardable);
+    setEditingOutfitId(outfit.id);
+    setEditingSnapshot({
+      canvasW: outfit.canvasW,
+      canvasH: outfit.canvasH,
+      items: outfit.items,
+    });
+    setOutfitMode(true);
+    setBoardExpanded(true);
+  }
+
+  // A board tapped on the outfit-boards page arrives as a param; open it in
+  // the editor once the closet items and saved outfits have loaded.
+  const { editOutfitId } = useLocalSearchParams<{ editOutfitId?: string }>();
+  useEffect(() => {
+    if (typeof editOutfitId !== "string" || !editOutfitId) return;
+    if (items.length === 0) return; // wait for the closet to load
+    const outfit = savedOutfits.find((o) => o.id === editOutfitId);
+    if (!outfit) return;
+    router.setParams({ editOutfitId: "" });
+    openSavedOutfitForEdit(outfit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editOutfitId, items, savedOutfits]);
+
+  /** Loads a dated outfit's board by id and opens it in the editor, so saving
+   *  updates that outfit row instead of inserting a new one. Fetches the
+   *  closet fresh rather than relying on `items` state — this navigates in
+   *  from another tab, so `items` may not have loaded (or synced) yet. */
+  async function openDayOutfitForEdit(dateKey: string, dayOutfitId: string) {
+    if (outfitMode) return; // already building/editing an outfit
+    try {
+      const [outfits, closetItems] = await Promise.all([
+        getOutfitsForDate(dateKey),
+        loadClosetFromSupabase(),
+      ]);
+      const outfit = outfits.find((o) => o.id === dayOutfitId);
+      if (!outfit || !outfit.board) return;
+      const freshById = new Map(closetItems.map((i) => [i.id, i]));
+      const boardable = outfit.itemIds
+        .map((id) => freshById.get(id))
+        .filter((i): i is ClothingItem => i !== undefined);
+      if (boardable.length === 0) {
+        Alert.alert(
+          "Nothing to edit",
+          "The items in this outfit are no longer in your closet.",
+        );
+        return;
+      }
+      boardDirtyRef.current = false;
+      editingDayOutfitOriginalIdsRef.current = new Set(outfit.itemIds);
+      setItems(closetItems);
+      setBoardItems(boardable);
+      setEditingDayOutfitId(outfit.id);
+      setEditingSnapshot({
+        canvasW: outfit.board.canvasW,
+        canvasH: outfit.board.canvasH,
+        items: outfit.board.items,
+      });
+      setOutfitForDate(dateKey);
+      setOutfitMode(true);
+      setBoardExpanded(true);
+    } catch (e) {
+      Alert.alert(
+        "Error",
+        e instanceof Error ? e.message : "Could not load this outfit.",
+      );
+    }
+  }
+
+  // The "make outfit board" button on a day page arrives as a param; open a
+  // blank board tagged with that date so saving writes a dated outfit.
+  // Tapping an existing board on that day page instead adds editDayOutfitId,
+  // which the effect below uses to load that outfit's board for editing.
+  const {
+    outfitForDate: outfitForDateParam,
+    editDayOutfitId: editDayOutfitIdParam,
+  } = useLocalSearchParams<{
+    outfitForDate?: string;
+    editDayOutfitId?: string;
+  }>();
+  useEffect(() => {
+    if (typeof outfitForDateParam !== "string" || !outfitForDateParam) return;
+    // When an editDayOutfitId also arrived, the effect below owns this
+    // navigation — don't blank the board here.
+    if (typeof editDayOutfitIdParam === "string" && editDayOutfitIdParam) return;
+    router.setParams({ outfitForDate: "" });
+    if (outfitMode) return; // already building/editing an outfit
+    boardDirtyRef.current = false;
+    setBoardItems([]);
+    setEditingOutfitId(null);
+    setEditingSnapshot(null);
+    setOutfitForDate(outfitForDateParam);
+    setOutfitMode(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outfitForDateParam, editDayOutfitIdParam, outfitMode]);
+
+  useEffect(() => {
+    if (typeof editDayOutfitIdParam !== "string" || !editDayOutfitIdParam) return;
+    if (typeof outfitForDateParam !== "string" || !outfitForDateParam) return;
+    router.setParams({ outfitForDate: "", editDayOutfitId: "" });
+    openDayOutfitForEdit(outfitForDateParam, editDayOutfitIdParam);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editDayOutfitIdParam, outfitForDateParam]);
+
+  const confirmDeleteSavedOutfit = useCallback((outfit: SavedOutfit) => {
+    Alert.alert("Delete this outfit?", undefined, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await deleteSavedOutfit(outfit.id);
+            setSavedOutfits((prev) => prev.filter((o) => o.id !== outfit.id));
+          } catch (e) {
+            Alert.alert(
+              "Could not delete outfit",
+              e instanceof Error ? e.message : "Unknown error",
+            );
+          }
+        },
+      },
+    ]);
+  }, []);
 
   async function syncGmail() {
     setFabOpen(false);
@@ -536,14 +912,13 @@ export default function ClosetScreen() {
         quality: 0.85,
       });
       if (!result.canceled && result.assets[0]?.uri) {
-        // Free-form crop (same screen the library flow uses) instead of the
-        // system picker's fixed-aspect editor.
+        saveToCameraRoll(result.assets[0].uri);
+        // Straight into add-closet-item — no crop step first. Background
+        // removal kicks off immediately there; cropping (if needed) happens
+        // from the review screen afterward.
         router.push({
-          pathname: "/crop-image",
-          params: {
-            uris: JSON.stringify([result.assets[0].uri]),
-            returnTo: "add-new",
-          },
+          pathname: "/add-closet-item",
+          params: { capturedUri: result.assets[0].uri },
         });
       }
     } catch (e) {
@@ -588,27 +963,34 @@ export default function ClosetScreen() {
   }
 
   const { width: windowWidth } = useWindowDimensions();
-  // Sized so ~3 cards are visible per row before scrolling horizontally, then scaled to 2/3
-  const cardWidth = ((windowWidth - 24 - 24) / 3) * (2 / 3);
+  // Sized so ~3 cards are visible per row before scrolling horizontally, then
+  // scaled to 2/3. On web the window can be arbitrarily wide, so use a fixed size.
+  const cardWidth =
+    Platform.OS === "web" ? 130 : ((windowWidth - 24 - 24) / 3) * (2 / 3);
 
   const listBottomPad = Math.max(32, insets.bottom + 80);
 
-  function renderClosetCard(item: ClothingItem, extraStyle?: { marginTop?: number; marginBottom?: number }) {
-    const outfitSelected = outfitMode && outfitSelectedIds.has(item.id);
+  function renderClosetCard(
+    item: ClothingItem,
+    extraStyle?: { marginTop?: number; marginBottom?: number },
+    dragOpts?: { drag?: () => void; isActive?: boolean },
+  ) {
+    const outfitSelected = outfitMode && boardItemIds.has(item.id);
     return (
       <Pressable
         onPress={() =>
           outfitMode
-            ? toggleOutfitSelected(item.id)
+            ? toggleOutfitSelected(item)
             : router.push(`/edit-closet-item?id=${item.id}`)
         }
+        onLongPress={dragOpts?.drag}
+        disabled={dragOpts?.isActive}
         style={({ pressed }) => [
           styles.cardPressable,
           { width: cardWidth },
           extraStyle,
-          outfitMode && styles.cardOutfitMode,
-          outfitSelected && styles.cardOutfitSelected,
           pressed && styles.cardPressed,
+          dragOpts?.isActive && styles.cardDragging,
         ]}
         accessibilityRole="button"
         accessibilityLabel={
@@ -643,8 +1025,20 @@ export default function ClosetScreen() {
             </View>
           </ThemedView>
         </ThemedView>
+        {outfitSelected && (
+          <View pointerEvents="none" style={styles.cardOutfitSelectedOutline} />
+        )}
       </Pressable>
     );
+  }
+
+  function toggleSectionExpanded(key: string) {
+    setExpandedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   }
 
   function renderSection(
@@ -652,38 +1046,99 @@ export default function ClosetScreen() {
     opts?: { drag?: () => void; isActive?: boolean },
   ) {
     const isTwoRow = section.key === "top";
-    return (
-      <View style={[styles.sectionContainer, opts?.isActive && styles.sectionContainerActive]}>
-        <Pressable
-          onLongPress={canReorderSections ? opts?.drag : undefined}
-          disabled={!canReorderSections || !opts?.drag || opts?.isActive}
-          accessibilityRole={opts?.drag ? "button" : "text"}
-          accessibilityLabel={opts?.drag ? `Reorder ${section.label} category` : undefined}
-        >
-          <ThemedText style={styles.sectionTitle}>
-            {section.label}{" "}
-            <ThemedText style={styles.sectionCount}>
-              {section.items.length}
+    const expanded = expandedSections.has(section.key);
+    const sectionDrag =
+      canReorderSections && opts?.drag && !opts.isActive ? opts.drag : undefined;
+    const content = (
+      <>
+        <View style={styles.sectionHeaderRow}>
+          <Pressable
+            onLongPress={sectionDrag}
+            disabled={!sectionDrag}
+            accessibilityRole={sectionDrag ? "button" : "text"}
+            accessibilityLabel={sectionDrag ? `Reorder ${section.label} category` : undefined}
+          >
+            <ThemedText style={styles.sectionTitle}>
+              {section.label}{" "}
+              <ThemedText style={styles.sectionCount}>
+                {section.items.length}
+              </ThemedText>
             </ThemedText>
-          </ThemedText>
-        </Pressable>
-        {isTwoRow ? (
-          <FlatList
-            data={chunkPairs(section.items)}
-            keyExtractor={(pair) => pair[0].id}
+          </Pressable>
+          <Pressable
+            onPress={() => toggleSectionExpanded(section.key)}
+            hitSlop={8}
+            style={({ pressed }) => [styles.sectionSwirlBtn, pressed && { opacity: 0.6 }]}
+            accessibilityRole="button"
+            accessibilityLabel={
+              expanded
+                ? `Collapse ${section.label} back to one row`
+                : `Expand ${section.label} to show all items`
+            }
+          >
+            <Swirl loosened={expanded} color="#000" />
+          </Pressable>
+        </View>
+        {expanded ? (
+          <View style={styles.sectionWrapGrid}>
+            {section.items.map((item) => (
+              <View key={item.id}>{renderClosetCard(item)}</View>
+            ))}
+          </View>
+        ) : isTwoRow ? (
+          canReorderItems ? (
+            // Two-row sections drag by column pair — the draggable list is
+            // one-dimensional, so the pair moves as a unit.
+            <DraggableFlatList
+              data={chunkPairs(section.items)}
+              keyExtractor={(pair) => pair[0].id}
+              horizontal
+              activationDistance={8}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.sectionRow}
+              onDragEnd={({ data }) => handleItemsDragEnd(section.key, data.flat())}
+              renderItem={({ item: pair, drag, isActive }: RenderItemParams<ClothingItem[]>) => (
+                <View style={styles.columnPair}>
+                  {renderClosetCard(pair[0], { marginBottom: 0 }, { drag, isActive })}
+                  {pair[1] ? (
+                    renderClosetCard(pair[1], { marginTop: 0 }, { drag, isActive })
+                  ) : (
+                    <View style={{ width: cardWidth }} />
+                  )}
+                </View>
+              )}
+            />
+          ) : (
+            <FlatList
+              data={chunkPairs(section.items)}
+              keyExtractor={(pair) => pair[0].id}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.sectionRow}
+              renderItem={({ item: pair }) => (
+                <View style={styles.columnPair}>
+                  {renderClosetCard(pair[0], { marginBottom: 0 })}
+                  {pair[1] ? (
+                    renderClosetCard(pair[1], { marginTop: 0 })
+                  ) : (
+                    <View style={{ width: cardWidth }} />
+                  )}
+                </View>
+              )}
+            />
+          )
+        ) : canReorderItems ? (
+          <DraggableFlatList
+            data={section.items}
+            keyExtractor={(item) => item.id}
             horizontal
+            activationDistance={8}
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.sectionRow}
-            renderItem={({ item: pair }) => (
-              <View style={styles.columnPair}>
-                {renderClosetCard(pair[0], { marginBottom: 0 })}
-                {pair[1] ? (
-                  renderClosetCard(pair[1], { marginTop: 0 })
-                ) : (
-                  <View style={{ width: cardWidth }} />
-                )}
-              </View>
-            )}
+            onDragEnd={({ data }) => handleItemsDragEnd(section.key, data)}
+            renderItem={({ item, drag, isActive }: RenderItemParams<ClothingItem>) =>
+              renderClosetCard(item, undefined, { drag, isActive })
+            }
           />
         ) : (
           <FlatList
@@ -695,7 +1150,20 @@ export default function ClosetScreen() {
             renderItem={({ item }) => renderClosetCard(item)}
           />
         )}
-      </View>
+      </>
+    );
+    const containerStyle = [
+      styles.sectionContainer,
+      opts?.isActive && styles.sectionContainerActive,
+    ];
+    // Holding anywhere in the section that isn't a card (cards claim their own
+    // touches) starts the section drag — not just the title.
+    return sectionDrag ? (
+      <Pressable onLongPress={sectionDrag} accessible={false} style={containerStyle}>
+        {content}
+      </Pressable>
+    ) : (
+      <View style={containerStyle}>{content}</View>
     );
   }
 
@@ -704,6 +1172,11 @@ export default function ClosetScreen() {
   // drag-to-reorder is a native-only affordance anyway.
   const listHeader = (
     <View style={styles.searchHeader}>
+                {outfitMode && outfitForDate && (
+                  <ThemedText type="defaultSemiBold" style={styles.outfitForDateBanner}>
+                    outfit for {formatOutfitDateLabel(outfitForDate)}
+                  </ThemedText>
+                )}
                 <View style={styles.searchRow}>
                   <View
                     style={[
@@ -779,6 +1252,18 @@ export default function ClosetScreen() {
                       <Ionicons name="stats-chart-outline" size={18} color={textColor} />
                     </Pressable>
                   )}
+                  <Pressable
+                    onPress={() => router.push("/outfit-boards")}
+                    style={({ pressed }) => [
+                      styles.sortBtn,
+                      { borderColor, backgroundColor: inputBackground },
+                      pressed && { opacity: 0.7 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Outfit boards"
+                  >
+                    <Ionicons name="albums-outline" size={18} color={textColor} />
+                  </Pressable>
                 </View>
       {loadError ? (
         <ThemedText style={styles.errorBanner}>
@@ -805,6 +1290,15 @@ export default function ClosetScreen() {
         ]}
       />
       <Pressable
+        onPress={cancelFooterAddCategory}
+        hitSlop={8}
+        style={styles.addCategoryFooterCancel}
+        accessibilityRole="button"
+        accessibilityLabel="Cancel adding category"
+      >
+        <Ionicons name="close" size={22} color={textColor} />
+      </Pressable>
+      <Pressable
         onPress={handleFooterAddCategory}
         disabled={savingCategory || !footerCategoryName.trim()}
         style={({ pressed }) => [
@@ -813,22 +1307,13 @@ export default function ClosetScreen() {
           pressed && { opacity: 0.8 },
         ]}
         accessibilityRole="button"
-        accessibilityLabel="Add category"
+        accessibilityLabel="Save category"
       >
         {savingCategory ? (
           <ActivityIndicator size="small" color="#fff" />
         ) : (
-          <Ionicons name="add" size={20} color="#fff" />
+          <Ionicons name="checkmark" size={20} color="#fff" />
         )}
-      </Pressable>
-      <Pressable
-        onPress={cancelFooterAddCategory}
-        hitSlop={8}
-        style={styles.addCategoryFooterCancel}
-        accessibilityRole="button"
-        accessibilityLabel="Cancel adding category"
-      >
-        <Ionicons name="close" size={22} color={textColor} />
       </Pressable>
     </View>
   ) : (
@@ -846,6 +1331,89 @@ export default function ClosetScreen() {
       <ThemedText style={styles.addCategoryFooterText}>Add category</ThemedText>
     </Pressable>
   );
+
+  const itemsById = useMemo(
+    () => new Map(items.map((i) => [i.id, i])),
+    [items],
+  );
+
+  const boardItemIds = useMemo(
+    () => new Set(boardItems.map((i) => i.id)),
+    [boardItems],
+  );
+
+  function renderSavedOutfitCard(outfit: SavedOutfit) {
+    const cardW = 150;
+    const cardH = 190;
+    const f = Math.min(
+      cardW / Math.max(outfit.canvasW, 1),
+      cardH / Math.max(outfit.canvasH, 1),
+    );
+    return (
+      <View style={styles.savedOutfitCell}>
+      <Pressable
+        onPress={() => openSavedOutfitForEdit(outfit)}
+        onLongPress={() => confirmDeleteSavedOutfit(outfit)}
+        style={({ pressed }) => [
+          styles.savedOutfitCard,
+          { width: cardW, height: cardH, borderColor },
+          pressed && { opacity: 0.85 },
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel="Saved outfit. Tap to edit, long-press to delete."
+      >
+        {outfit.items.map((si) => {
+          const item = itemsById.get(si.id);
+          if (!item) return null; // item since removed from closet
+          return (
+            <View
+              key={si.id}
+              style={{
+                position: "absolute",
+                left: si.x * f,
+                top: si.y * f,
+                width: OUTFIT_ITEM_W * f,
+                height: OUTFIT_ITEM_H * f,
+                zIndex: si.z,
+                transform: [{ scale: si.scale }],
+              }}
+            >
+              <Image
+                source={item.image}
+                style={styles.savedOutfitItemImage}
+                contentFit="contain"
+                cachePolicy="memory-disk"
+              />
+            </View>
+          );
+        })}
+      </Pressable>
+      <ThemedText style={styles.savedOutfitDate}>
+        {formatBoardDate(outfit.createdAt)}
+      </ThemedText>
+      </View>
+    );
+  }
+
+  const savedOutfitsSection =
+    savedOutfits.length > 0 ? (
+      <View style={styles.savedOutfitsSection}>
+        <ThemedText style={styles.sectionTitle}>
+          Outfits{" "}
+          <ThemedText style={styles.sectionCount}>
+            {savedOutfits.length}
+          </ThemedText>
+        </ThemedText>
+        <FlatList
+          data={savedOutfits}
+          keyExtractor={(o) => o.id}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.sectionRow}
+          renderItem={({ item: outfit }) => renderSavedOutfitCard(outfit)}
+        />
+      </View>
+    ) : null;
 
   const listEmpty =
     loadError || sections.length > 0 ? null : items.length > 0 ? (
@@ -892,7 +1460,12 @@ export default function ClosetScreen() {
             ]}
             ListHeaderComponent={listHeader}
             ListEmptyComponent={listEmpty}
-            ListFooterComponent={addCategoryFooter}
+            ListFooterComponent={
+              <>
+                {addCategoryFooter}
+                {savedOutfitsSection}
+              </>
+            }
             renderItem={({ item: section }) => renderSection(section)}
           />
         ) : (
@@ -929,13 +1502,13 @@ export default function ClosetScreen() {
                   </>
                 )}
                 {addCategoryFooter}
+                {savedOutfitsSection}
               </>
             }
           />
         )}
         {outfitMode ? (
-          !boardExpanded &&
-          (outfitSelectedIds.size > 0 || boardItems.length === 0) && (
+          !boardExpanded && (
             <Pressable
               onPress={handleDoneSelecting}
               style={({ pressed }) => [
@@ -945,13 +1518,13 @@ export default function ClosetScreen() {
               ]}
               accessibilityRole="button"
               accessibilityLabel={
-                outfitSelectedIds.size > 0
-                  ? "Done selecting"
+                boardItems.length > 0
+                  ? "Done selecting, open outfit board"
                   : "Cancel making outfit"
               }
             >
               <ThemedText style={styles.doneSelectingText}>
-                {outfitSelectedIds.size > 0 ? "done selecting" : "cancel"}
+                {boardItems.length > 0 ? "done selecting" : "cancel"}
               </ThemedText>
             </Pressable>
           )
@@ -1083,15 +1656,27 @@ export default function ClosetScreen() {
             <Ionicons name="add" size={30} color="#fff" />
           </Pressable>
         )}
-        {outfitMode && boardItems.length > 0 && (
+        {outfitMode && (
           <OutfitBoard
             items={boardItems}
             expanded={boardExpanded}
             onExpand={() => setBoardExpanded(true)}
-            onMinimize={() => setBoardExpanded(false)}
+            onMinimize={() => {
+              dismissBoardHistory();
+              setBoardExpanded(false);
+            }}
             onRemoveItem={removeBoardItem}
             onClose={closeOutfitBoard}
+            onSave={handleSaveOutfit}
+            saving={savingOutfit}
+            onDirty={markBoardDirty}
+            initialSnapshot={editingSnapshot}
             bottomOffset={insets.bottom + 10}
+            title={
+              outfitForDate
+                ? `outfit for ${formatOutfitDateLabel(outfitForDate)}`
+                : undefined
+            }
           />
         )}
       </View>
@@ -1206,15 +1791,17 @@ export default function ClosetScreen() {
               <ThemedText type="defaultSemiBold" style={styles.sheetTitleInRow}>
                 Categories
               </ThemedText>
-              <Pressable
-                onPress={() => (addingCategory ? cancelAddCategory() : setAddingCategory(true))}
-                hitSlop={8}
-                style={styles.sheetTitleAddBtn}
-                accessibilityRole="button"
-                accessibilityLabel={addingCategory ? "Cancel adding category" : "Add category"}
-              >
-                <Ionicons name={addingCategory ? "close" : "add"} size={22} color={textColor} />
-              </Pressable>
+              {!addingCategory && (
+                <Pressable
+                  onPress={() => setAddingCategory(true)}
+                  hitSlop={8}
+                  style={styles.sheetTitleAddBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add category"
+                >
+                  <Ionicons name="add" size={22} color={textColor} />
+                </Pressable>
+              )}
             </View>
             {addingCategory && (
               <KeyboardAvoidingView
@@ -1237,6 +1824,15 @@ export default function ClosetScreen() {
                   style={[styles.addCategoryInput, { borderColor, color: textColor }]}
                 />
                 <Pressable
+                  onPress={cancelAddCategory}
+                  hitSlop={8}
+                  style={styles.addCategoryFooterCancel}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel adding category"
+                >
+                  <Ionicons name="close" size={22} color={textColor} />
+                </Pressable>
+                <Pressable
                   onPress={handleAddCategory}
                   disabled={savingCategory || !newCategoryName.trim()}
                   style={({ pressed }) => [
@@ -1245,12 +1841,12 @@ export default function ClosetScreen() {
                     pressed && { opacity: 0.8 },
                   ]}
                   accessibilityRole="button"
-                  accessibilityLabel="Add category"
+                  accessibilityLabel="Save category"
                 >
                   {savingCategory ? (
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
-                    <Ionicons name="add" size={20} color="#fff" />
+                    <Ionicons name="checkmark" size={20} color="#fff" />
                   )}
                 </Pressable>
               </KeyboardAvoidingView>
@@ -1301,6 +1897,9 @@ const styles = StyleSheet.create({
   searchHeader: {
     marginBottom: 12,
     gap: 8,
+  },
+  outfitForDateBanner: {
+    fontSize: 17,
   },
   searchRow: {
     flexDirection: "row",
@@ -1581,6 +2180,19 @@ const styles = StyleSheet.create({
     fontSize: 15,
     marginBottom: 4,
   },
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  sectionSwirlBtn: {
+    padding: 2,
+    marginRight: 4,
+  },
+  sectionWrapGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
   sectionCount: {
     fontSize: 15,
     color: "#8E8E93",
@@ -1597,13 +2209,16 @@ const styles = StyleSheet.create({
   cardPressed: {
     opacity: 0.75,
   },
-  cardOutfitMode: {
-    borderWidth: 2,
-    borderColor: "transparent",
-    borderRadius: 14,
+  cardDragging: {
+    opacity: 0.85,
+    transform: [{ scale: 1.05 }],
   },
-  cardOutfitSelected: {
+  cardOutfitSelectedOutline: {
+    ...StyleSheet.absoluteFillObject,
+    borderWidth: 2,
     borderColor: "#000",
+    borderRadius: 12,
+    zIndex: 1,
   },
   doneSelectingBtn: {
     position: "absolute",
@@ -1624,6 +2239,29 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 15,
     fontWeight: "600",
+  },
+  savedOutfitsSection: {
+    marginTop: 20,
+  },
+  savedOutfitCell: {
+    marginRight: 8,
+    marginVertical: 4,
+  },
+  savedOutfitCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    backgroundColor: "#fff",
+    overflow: "hidden",
+  },
+  savedOutfitDate: {
+    fontSize: 11,
+    opacity: 0.55,
+    textAlign: "center",
+    marginTop: 4,
+  },
+  savedOutfitItemImage: {
+    width: "100%",
+    height: "100%",
   },
   card: {
     flex: 1,

@@ -21,9 +21,11 @@ import { CategoryPicker, type Category } from "@/components/category-picker";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
-import { listCategories } from "@/lib/categories";
+import { requestPhoneBgRemoval } from "@/lib/bg-removal-request";
+import { addCategory, listCategories } from "@/lib/categories";
 import { enqueueClosetSaves } from "@/lib/closet-save-queue";
-import { onImagesCaptured } from "@/lib/image-capture-bridge";
+import { onImageCaptured, onImagesCaptured } from "@/lib/image-capture-bridge";
+import { saveToCameraRoll } from "@/lib/save-to-camera-roll";
 import { liftSubject, subjectLiftAvailable } from "@/lib/subject-lift";
 
 const PICKER_OPTIONS: ImagePicker.ImagePickerOptions = {
@@ -41,6 +43,12 @@ type BulkItem = {
   wearsText: string;
   category: Category | null;
   processingBg?: boolean;
+  // Background already removed (on-device lift, or the phone answered a
+  // paste-time request) — don't also flag the item at save.
+  bgRemoved?: boolean;
+  // Original uploaded at paste time for the phone request — reused at save so
+  // the image isn't uploaded twice.
+  uploadedUrl?: string;
 };
 
 // ── Phase types ──────────────────────────────────────────────────────────────
@@ -88,6 +96,11 @@ export default function AddClosetItemScreen() {
   // ── Helpers ───────────────────────────────────────────────────────────────
   function startEditingWithUris(uris: string[]) {
     const canLiftSubject = subjectLiftAvailable();
+    // On web, ask the user's iPhone to cut out each photo the moment it
+    // arrives (paste, capture, upload) — the phone answers within seconds
+    // via silent push/realtime and the cutout swaps in while the user fills
+    // in details. No answer in time → the item is flagged at save instead.
+    const phoneRemoval = !canLiftSubject && Platform.OS === "web";
     setBulkItems(
       uris.map((uri) => ({
         uri,
@@ -96,37 +109,56 @@ export default function AddClosetItemScreen() {
         costText: "",
         wearsText: "",
         category: null,
-        processingBg: canLiftSubject,
+        processingBg: canLiftSubject || phoneRemoval,
       })),
     );
     setBulkIndex(0);
 
-    if (!canLiftSubject) {
-      setPhase("editing");
+    const patchItem = (index: number, originalUri: string, fields: Partial<BulkItem>) =>
+      setBulkItems((prev) => {
+        if (prev[index]?.uri !== originalUri) return prev;
+        const next = [...prev];
+        next[index] = { ...next[index], ...fields };
+        return next;
+      });
+
+    if (canLiftSubject) {
+      // Remove backgrounds up front behind a progress screen, then let the
+      // user review the cutouts before filling in details.
+      setPhase("processing");
+      uris.forEach((originalUri, index) => {
+        liftSubject(originalUri)
+          .then((cutoutUri) =>
+            patchItem(index, originalUri, { uri: cutoutUri, processingBg: false }),
+          )
+          .catch(() => patchItem(index, originalUri, { processingBg: false }));
+      });
       return;
     }
 
-    // Remove backgrounds up front behind a progress screen, then let the user
-    // review the cutouts before filling in details.
-    setPhase("processing");
+    // The phone round-trip shouldn't block the form — go straight to editing
+    // and show a per-item spinner until the cutout lands.
+    setPhase("editing");
+    if (!phoneRemoval) return;
+
     uris.forEach((originalUri, index) => {
-      liftSubject(originalUri)
-        .then((cutoutUri) => {
-          setBulkItems((prev) => {
-            if (prev[index]?.uri !== originalUri) return prev;
-            const next = [...prev];
-            next[index] = { ...next[index], uri: cutoutUri, processingBg: false };
-            return next;
-          });
+      requestPhoneBgRemoval(originalUri)
+        .then(({ sourceUrl, result }) => {
+          patchItem(index, originalUri, { uploadedUrl: sourceUrl });
+          return result;
         })
-        .catch(() => {
-          setBulkItems((prev) => {
-            if (prev[index]?.uri !== originalUri) return prev;
-            const next = [...prev];
-            next[index] = { ...next[index], processingBg: false };
-            return next;
-          });
-        });
+        .then((cutoutUrl) => {
+          if (cutoutUrl) {
+            patchItem(index, originalUri, {
+              uri: cutoutUrl,
+              bgRemoved: true,
+              processingBg: false,
+            });
+          } else {
+            patchItem(index, originalUri, { processingBg: false });
+          }
+        })
+        .catch(() => patchItem(index, originalUri, { processingBg: false }));
     });
   }
 
@@ -144,6 +176,87 @@ export default function AddClosetItemScreen() {
     const next = bulkItems.filter((_, i) => i !== index);
     setBulkItems(next);
     if (next.length === 0) setPhase("pick");
+  }
+
+  // Index currently being cropped from the review screen — set right before
+  // navigating to /crop-image, consumed when it emits the result back to us.
+  const reviewCropIndexRef = useRef<number | null>(null);
+
+  function cropReviewItem(index: number, uri: string) {
+    reviewCropIndexRef.current = index;
+    router.push({
+      pathname: "/crop-image",
+      params: { uri, returnTo: "review" },
+    });
+  }
+
+  useEffect(() => {
+    return onImageCaptured((uri) => {
+      const index = reviewCropIndexRef.current;
+      reviewCropIndexRef.current = null;
+      if (index == null) return;
+      setBulkItems((prev) => {
+        if (index >= prev.length) return prev;
+        const next = [...prev];
+        next[index] = { ...next[index], uri };
+        return next;
+      });
+    });
+  }, []);
+
+  async function retakeReviewPhoto(index: number) {
+    if (picking) return;
+    setPicking(true);
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("Camera access", "Allow camera access in Settings.");
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 0.85,
+      });
+      if (result.canceled || !result.assets[0]?.uri) return;
+      const newUri = result.assets[0].uri;
+      saveToCameraRoll(newUri);
+
+      const canLiftSubject = subjectLiftAvailable();
+      setBulkItems((prev) => {
+        if (index >= prev.length) return prev;
+        const next = [...prev];
+        next[index] = {
+          ...next[index],
+          uri: newUri,
+          processingBg: canLiftSubject,
+          bgRemoved: false,
+          uploadedUrl: undefined,
+        };
+        return next;
+      });
+      if (!canLiftSubject) return;
+
+      try {
+        const cutoutUri = await liftSubject(newUri);
+        setBulkItems((prev) => {
+          if (index >= prev.length || prev[index].uri !== newUri) return prev;
+          const next = [...prev];
+          next[index] = { ...next[index], uri: cutoutUri, processingBg: false };
+          return next;
+        });
+      } catch {
+        setBulkItems((prev) => {
+          if (index >= prev.length || prev[index].uri !== newUri) return prev;
+          const next = [...prev];
+          next[index] = { ...next[index], processingBg: false };
+          return next;
+        });
+      }
+    } catch (e) {
+      Alert.alert("Error", e instanceof Error ? e.message : "Could not open camera.");
+    } finally {
+      setPicking(false);
+    }
   }
 
   // Arrived here with photo(s) already picked — either a single image from the
@@ -212,6 +325,7 @@ export default function AddClosetItemScreen() {
       }
       const result = await ImagePicker.launchCameraAsync(PICKER_OPTIONS);
       if (!result.canceled && result.assets[0]?.uri) {
+        saveToCameraRoll(result.assets[0].uri);
         setPendingUris([result.assets[0].uri]);
         setPhase("capturing");
       }
@@ -228,6 +342,7 @@ export default function AddClosetItemScreen() {
     try {
       const result = await ImagePicker.launchCameraAsync(PICKER_OPTIONS);
       if (!result.canceled && result.assets[0]?.uri) {
+        saveToCameraRoll(result.assets[0].uri);
         setPendingUris((prev) => [...prev, result.assets[0].uri]);
       }
     } catch (e) {
@@ -246,35 +361,40 @@ export default function AddClosetItemScreen() {
     });
   };
 
+  const handleAddCategory = async (name: string) => {
+    const created = await addCategory(name);
+    setCategories((prev) => [...prev, created.name]);
+    return created.name;
+  };
+
   // ── Save ──────────────────────────────────────────────────────────────────
   // Uploads run in the background (lib/closet-save-queue) so the modal can
   // dismiss immediately instead of blocking on slow image uploads.
   const onNext = () => {
-    const current = bulkItems[bulkIndex];
-    if (!current.name.trim()) {
-      Alert.alert("Name required", "Enter a name for this item.");
-      return;
-    }
     if (bulkIndex < bulkItems.length - 1) {
       setBulkIndex((i) => i + 1);
       return;
     }
     enqueueClosetSaves(
-      bulkItems
-        .filter((item) => item.name.trim())
-        .map((item) => {
-          const parsed = parseFloat(item.costText.replace(/,/g, ""));
-          const parsedWears = parseInt(item.wearsText, 10);
-          return {
-            name: item.name.trim(),
-            brand: item.brand.trim(),
-            cost: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0,
-            wears:
-              Number.isFinite(parsedWears) && parsedWears >= 0 ? parsedWears : 0,
-            localUri: item.uri || null,
-            category: item.category ?? null,
-          };
-        }),
+      bulkItems.map((item) => {
+        const parsed = parseFloat(item.costText.replace(/,/g, ""));
+        const parsedWears = parseInt(item.wearsText, 10);
+        return {
+          name: item.name.trim(),
+          brand: item.brand.trim(),
+          cost: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0,
+          wears:
+            Number.isFinite(parsedWears) && parsedWears >= 0 ? parsedWears : 0,
+          // Prefer the copy already uploaded for the phone request over
+          // re-uploading the local image.
+          localUri: (item.bgRemoved ? item.uri : item.uploadedUrl || item.uri) || null,
+          category: item.category ?? null,
+          // The phone didn't answer (or this is Android) — flag it so an
+          // iOS device removes the background via the silent-push queue.
+          needsBgRemoval:
+            !!item.uri && !item.bgRemoved && !subjectLiftAvailable(),
+        };
+      }),
     );
     router.back();
   };
@@ -350,7 +470,7 @@ export default function AddClosetItemScreen() {
           Check the results
         </ThemedText>
         <ThemedText style={styles.reviewSubtitle}>
-          Remove any photo where the background didn’t come out right.
+          Crop, retake, or remove any photo where the background didn’t come out right.
         </ThemedText>
         <ScrollView contentContainerStyle={styles.reviewGrid}>
           {bulkItems.map((item, index) => (
@@ -360,15 +480,43 @@ export default function AddClosetItemScreen() {
                 style={styles.reviewImage}
                 contentFit="contain"
               />
-              <Pressable
-                onPress={() => removeReviewItem(index)}
-                hitSlop={8}
-                style={styles.reviewRemoveBtn}
-                accessibilityRole="button"
-                accessibilityLabel="Remove this photo"
-              >
-                <Ionicons name="close" size={16} color="#fff" />
-              </Pressable>
+              {item.processingBg && (
+                <View style={styles.reviewProcessingOverlay}>
+                  <ActivityIndicator color="#fff" />
+                </View>
+              )}
+              <View style={styles.reviewCellActions}>
+                <Pressable
+                  onPress={() => cropReviewItem(index, item.uri)}
+                  disabled={item.processingBg}
+                  hitSlop={6}
+                  style={[styles.reviewActionBtn, item.processingBg && { opacity: 0.4 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Crop this photo"
+                >
+                  <Ionicons name="crop-outline" size={14} color="#fff" />
+                </Pressable>
+                <Pressable
+                  onPress={() => retakeReviewPhoto(index)}
+                  disabled={item.processingBg}
+                  hitSlop={6}
+                  style={[styles.reviewActionBtn, item.processingBg && { opacity: 0.4 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retake this photo"
+                >
+                  <Ionicons name="camera-outline" size={14} color="#fff" />
+                </Pressable>
+                <Pressable
+                  onPress={() => removeReviewItem(index)}
+                  disabled={item.processingBg}
+                  hitSlop={6}
+                  style={[styles.reviewActionBtn, item.processingBg && { opacity: 0.4 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Remove this photo"
+                >
+                  <Ionicons name="close" size={14} color="#fff" />
+                </Pressable>
+              </View>
             </View>
           ))}
         </ScrollView>
@@ -447,7 +595,7 @@ export default function AddClosetItemScreen() {
               />
               <TextInput
                 accessibilityLabel="Item name"
-                placeholder="Name *"
+                placeholder="Name"
                 placeholderTextColor={placeholderColor}
                 value={current.name}
                 onChangeText={(v) => updateField("name", v)}
@@ -487,6 +635,7 @@ export default function AddClosetItemScreen() {
             onChange={(cat) => updateField("category", cat)}
             categories={categories}
             nullable
+            onAddCategory={handleAddCategory}
           />
 
           <Pressable
@@ -678,10 +827,20 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
   },
-  reviewRemoveBtn: {
+  reviewProcessingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  reviewCellActions: {
     position: "absolute",
     top: 6,
     right: 6,
+    flexDirection: "row",
+    gap: 6,
+  },
+  reviewActionBtn: {
     width: 26,
     height: 26,
     borderRadius: 13,
